@@ -35,6 +35,15 @@ zig build -Doptimize=ReleaseSafe
 cp zig-out/bin/mcc /usr/local/bin/
 ```
 
+## Update
+
+```bash
+mcc update          # no-op if already on the latest release
+mcc update --force  # reinstall even if already current
+```
+
+Checks the latest GitHub release and, if newer than the installed version, fetches it and replaces the binary in place (reusing the install script for OS/arch detection and checksum verification). If you're already on the latest version it does nothing. If mcc was installed via Homebrew, it defers to `brew update && brew upgrade mcc`. Requires `curl` or `wget`.
+
 ## Uninstall
 
 ```bash
@@ -69,6 +78,7 @@ mcc new work --no-share
 | `mcc ls`                       | List all profiles                                               |
 | `mcc which <profile>`          | Show the CLAUDE_CONFIG_DIR for a profile                        |
 | `mcc doctor`                   | Verify environment configuration                                |
+| `mcc update`                   | Update mcc to the latest release (defers to brew if managed)    |
 | `mcc uninstall`                | Remove mcc's data and binary (never touches `~/.claude`)        |
 
 ### Extra Arguments

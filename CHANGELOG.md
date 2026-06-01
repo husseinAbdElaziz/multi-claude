@@ -5,10 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0]
 
 ### Added
 
+- `mcc update` command to update an installer-based install to the latest release in place (reuses `install.sh` for OS/arch detection and checksum verification). Compares the installed version against the latest GitHub release and skips the download when already current (`--force` to reinstall anyway). Detects Homebrew-managed installs and defers to `brew upgrade mcc`.
 - `mcc uninstall` command to remove mcc's data directory (`~/.multi-claude`) and the binary, with a confirmation prompt (`--yes`/`-y` to skip). Detects Homebrew-managed installs and defers to `brew uninstall`; never touches `~/.claude`.
 
 ## [0.1.0] - 2026-06-01

@@ -15,6 +15,8 @@ test "source modules compile" {
     std.testing.refAllDecls(Src.lock);
     std.testing.refAllDecls(Src.log);
     std.testing.refAllDecls(Src.doctor);
+    std.testing.refAllDecls(Src.update);
+    std.testing.refAllDecls(Src.uninstall);
 }
 
 // Pull in the actual test suites by importing their files so their `test`
@@ -25,4 +27,5 @@ comptime {
     _ = @import("resources.zig");
     _ = @import("levenshtein.zig");
     _ = @import("integration.zig");
+    _ = @import("update.zig");
 }

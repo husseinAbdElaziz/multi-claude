@@ -9,6 +9,7 @@ pub const Command = enum {
     ls,
     which,
     doctor,
+    update,
     uninstall,
     help,
     version,
@@ -50,6 +51,13 @@ pub fn parse(allocator: Allocator, args: []const []const u8) !ParsedCli {
     // mcc ls
     if (std.mem.eql(u8, first, "ls")) {
         var result: ParsedCli = .{ .command = .ls };
+        parseFlags(&result, args[1..]);
+        return result;
+    }
+
+    // mcc update
+    if (std.mem.eql(u8, first, "update")) {
+        var result: ParsedCli = .{ .command = .update };
         parseFlags(&result, args[1..]);
         return result;
     }

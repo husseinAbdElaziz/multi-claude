@@ -59,6 +59,14 @@ test "cli: parse ls" {
     try std.testing.expectEqual(cli.Command.ls, parsed.command);
 }
 
+test "cli: parse update" {
+    const gpa = std.testing.allocator;
+    const parsed = try cli.parse(gpa, &.{"update"});
+    defer cli.deinit(parsed, gpa);
+
+    try std.testing.expectEqual(cli.Command.update, parsed.command);
+}
+
 test "cli: parse uninstall" {
     const gpa = std.testing.allocator;
     const parsed = try cli.parse(gpa, &.{"uninstall"});

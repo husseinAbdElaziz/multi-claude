@@ -11,6 +11,7 @@ pub const lock = @import("lock.zig");
 pub const fsx = @import("fsx.zig");
 pub const log = @import("log.zig");
 pub const doctor = @import("doctor.zig");
+pub const update = @import("update.zig");
 pub const uninstall = @import("uninstall.zig");
 
 /// Calculate simple Levenshtein distance between two strings
@@ -154,6 +155,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .doctor => {
             try doctor.check(gpa, logger);
         },
+        .update => {
+            try update.run(gpa, logger, init, parsed.yes);
+        },
         .uninstall => {
             try uninstall.run(gpa, logger, parsed.yes);
         },
@@ -180,6 +184,7 @@ fn printUsage() void {
         \\  ls                     List all profiles
         \\  which <profile>        Show config directory for a profile
         \\  doctor                 Check environment configuration
+        \\  update                 Update mcc to the latest release
         \\  uninstall [--yes]      Remove mcc data (~/.multi-claude) and the binary
         \\
         \\Options:
