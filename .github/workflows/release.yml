@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS binaries must be built on a macOS runner: linking libc for the
+          # Apple targets needs the macOS SDK, which Zig does not bundle.
+          - os: macos-latest
+            zig_target: aarch64-macos
+            asset: mcc-macos-arm64
+          - os: macos-latest
+            zig_target: x86_64-macos
+            asset: mcc-macos-x64
+          # Linux musl builds are fully static and cross-compile from anywhere.
+          - os: ubuntu-latest
+            zig_target: x86_64-linux-musl
+            asset: mcc-linux-x64
+          - os: ubuntu-latest
+            zig_target: aarch64-linux-musl
+            asset: mcc-linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        uses: mlugg/setup-zig@v1
+        with:
+          version: "0.16.0"
+
+      - name: Build ${{ matrix.asset }}
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          zig build -Doptimize=ReleaseSafe -Dtarget="${{ matrix.zig_target }}" -Dversion="$VERSION"
+          mkdir -p dist
+          tar -czf "dist/${{ matrix.asset }}.tar.gz" -C zig-out/bin mcc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/*.tar.gz
+          retention-days: 1
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      TAP_REPO: husseinAbdElaziz/homebrew-tap
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect artifacts and compute checksums
+        shell: bash
+        run: |
+          mkdir -p dist
+          find artifacts -name '*.tar.gz' -exec cp {} dist/ \;
+          cd dist
+          sha256sum *.tar.gz | tee SHA256SUMS
+
+      - name: Generate Homebrew formula
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          ./scripts/gen-formula.sh "$VERSION" dist/SHA256SUMS > Formula/mcc.rb
+          cat Formula/mcc.rb
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            Formula/mcc.rb
+          generate_release_notes: true
+
+      - name: Publish formula to Homebrew tap
+        if: env.TAP_TOKEN != ''
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: ./scripts/publish-formula.sh

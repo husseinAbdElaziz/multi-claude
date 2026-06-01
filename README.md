@@ -4,15 +4,40 @@ Run multiple [Claude Code](https://claude.ai/code) CLI profiles on one device. E
 
 Built in **Zig 0.16.0** — no external dependencies, single static binary.
 
+## Install
+
+> mcc supports **macOS** and **Linux** (including **WSL**). Native Windows is not supported because profile sharing relies on symlinks.
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap husseinAbdElaziz/tap
+brew install mcc
+```
+
+### Install script (macOS / Linux / WSL)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/husseinAbdElaziz/multi-claude/main/install.sh | bash
+```
+
+The script downloads the right prebuilt binary for your OS/arch, verifies its checksum, and installs it to `/usr/local/bin` (or `~/.local/bin` if that isn't writable). Override with `MCC_VERSION` or `MCC_INSTALL_DIR`:
+
+```bash
+MCC_VERSION=0.1.0 MCC_INSTALL_DIR="$HOME/bin" \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/husseinAbdElaziz/multi-claude/main/install.sh)"
+```
+
+### From source
+
+```bash
+zig build -Doptimize=ReleaseSafe
+cp zig-out/bin/mcc /usr/local/bin/
+```
+
 ## Quick Start
 
 ```bash
-# Build from source
-zig build -Doptimize=ReleaseSafe
-
-# Install
-cp zig-out/bin/mcc /usr/local/bin/
-
 # Create a shared profile (inherits settings, plugins, skills from ~/.claude)
 mcc new personal
 
@@ -114,6 +139,29 @@ zig build -Doptimize=ReleaseSafe
 # Run tests
 zig build test
 ```
+
+## Releasing
+
+Releases are automated by `.github/workflows/release.yml`. Pushing a tag builds the
+binaries, publishes a GitHub Release, and updates the Homebrew formula:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The workflow builds static binaries for `macos-arm64`, `macos-x64`, `linux-x64`,
+and `linux-arm64`, attaches them (plus `SHA256SUMS` and `Formula/mcc.rb`) to the
+release, and regenerates `Formula/mcc.rb` with the new version and checksums.
+
+**One-time Homebrew tap setup** (so `brew install mcc` works):
+
+1. Create a public repo named `homebrew-tap` under your account.
+2. Create a token with write access to it and add it to this repo's
+   secrets as `HOMEBREW_TAP_TOKEN`.
+
+On each release the workflow pushes the updated `Formula/mcc.rb` to that tap repo.
+Users then run `brew tap husseinAbdElaziz/tap && brew install mcc`.
 
 ## Platform Support
 

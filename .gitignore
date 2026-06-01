@@ -1,5 +1,6 @@
 .zig-cache/
 .zig-global-cache/
 zig-out/
+dist/
 test_link_file_*
 test_target_file_*

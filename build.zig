@@ -15,6 +15,13 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // Version baked into the binary. CI release builds pass `-Dversion=<tag>`
+    // so `mcc --version` matches the released tag; local builds use the default.
+    const version = b.option([]const u8, "version", "Version string reported by `mcc --version`") orelse "0.1.0";
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
+    src_module.addImport("build_options", build_options.createModule());
+
     const exe = b.addExecutable(.{
         .name = "mcc",
         .root_module = src_module,

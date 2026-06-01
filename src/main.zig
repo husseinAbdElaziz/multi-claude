@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 pub const cli = @import("cli.zig");
 pub const config = @import("config.zig");
 pub const profile = @import("profile.zig");
@@ -189,5 +190,5 @@ fn printUsage() void {
 fn printVersion() void {
     const io = std.Io.Threaded.global_single_threaded.io();
     const out = std.Io.File.stdout();
-    _ = std.Io.File.writeStreamingAll(out, io, "mcc 0.1.0\n") catch {};
+    _ = std.Io.File.writeStreamingAll(out, io, "mcc " ++ build_options.version ++ "\n") catch {};
 }
