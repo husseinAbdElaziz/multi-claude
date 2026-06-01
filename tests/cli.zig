@@ -59,6 +59,33 @@ test "cli: parse ls" {
     try std.testing.expectEqual(cli.Command.ls, parsed.command);
 }
 
+test "cli: parse uninstall" {
+    const gpa = std.testing.allocator;
+    const parsed = try cli.parse(gpa, &.{"uninstall"});
+    defer cli.deinit(parsed, gpa);
+
+    try std.testing.expectEqual(cli.Command.uninstall, parsed.command);
+    try std.testing.expect(!parsed.yes);
+}
+
+test "cli: parse uninstall --yes" {
+    const gpa = std.testing.allocator;
+    const parsed = try cli.parse(gpa, &.{ "uninstall", "--yes" });
+    defer cli.deinit(parsed, gpa);
+
+    try std.testing.expectEqual(cli.Command.uninstall, parsed.command);
+    try std.testing.expect(parsed.yes);
+}
+
+test "cli: parse uninstall -y" {
+    const gpa = std.testing.allocator;
+    const parsed = try cli.parse(gpa, &.{ "uninstall", "-y" });
+    defer cli.deinit(parsed, gpa);
+
+    try std.testing.expectEqual(cli.Command.uninstall, parsed.command);
+    try std.testing.expect(parsed.yes);
+}
+
 test "cli: parse new <profile>" {
     const gpa = std.testing.allocator;
     const parsed = try cli.parse(gpa, &.{ "new", "personal" });

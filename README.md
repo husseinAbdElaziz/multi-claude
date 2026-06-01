@@ -35,6 +35,15 @@ zig build -Doptimize=ReleaseSafe
 cp zig-out/bin/mcc /usr/local/bin/
 ```
 
+## Uninstall
+
+```bash
+mcc uninstall          # prompts for confirmation
+mcc uninstall --yes    # no prompt
+```
+
+This removes mcc's data directory (`~/.multi-claude`, i.e. all profiles) and the `mcc` binary. Your real `~/.claude` is never touched. If mcc was installed via Homebrew, the binary is left in place and you're directed to `brew uninstall mcc`.
+
 ## Quick Start
 
 ```bash
@@ -50,16 +59,17 @@ mcc new work --no-share
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `mcc` | Run Claude with the **default** profile (identical to `claude`) |
-| `mcc <profile>` | Run Claude with the specified profile |
-| `mcc new <profile>` | Create a new shared profile |
-| `mcc new <profile> --no-share` | Create a fully isolated profile |
-| `mcc delete <profile>` | Delete a profile (never touches default) |
-| `mcc ls` | List all profiles |
-| `mcc which <profile>` | Show the CLAUDE_CONFIG_DIR for a profile |
-| `mcc doctor` | Verify environment configuration |
+| Command                        | Description                                                     |
+| ------------------------------ | --------------------------------------------------------------- |
+| `mcc`                          | Run Claude with the **default** profile (identical to `claude`) |
+| `mcc <profile>`                | Run Claude with the specified profile                           |
+| `mcc new <profile>`            | Create a new shared profile                                     |
+| `mcc new <profile> --no-share` | Create a fully isolated profile                                 |
+| `mcc delete <profile>`         | Delete a profile (never touches default)                        |
+| `mcc ls`                       | List all profiles                                               |
+| `mcc which <profile>`          | Show the CLAUDE_CONFIG_DIR for a profile                        |
+| `mcc doctor`                   | Verify environment configuration                                |
+| `mcc uninstall`                | Remove mcc's data and binary (never touches `~/.claude`)        |
 
 ### Extra Arguments
 
@@ -71,10 +81,10 @@ mcc personal -- --resume
 
 ### Options
 
-| Flag | Description |
-|------|-------------|
-| `--help`, `-h` | Show help |
-| `--version`, `-v` | Show version |
+| Flag               | Description          |
+| ------------------ | -------------------- |
+| `--help`, `-h`     | Show help            |
+| `--version`, `-v`  | Show version         |
 | `--verbose`, `-vv` | Enable debug logging |
 
 ## How It Works
@@ -139,29 +149,6 @@ zig build -Doptimize=ReleaseSafe
 # Run tests
 zig build test
 ```
-
-## Releasing
-
-Releases are automated by `.github/workflows/release.yml`. Pushing a tag builds the
-binaries, publishes a GitHub Release, and updates the Homebrew formula:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The workflow builds static binaries for `macos-arm64`, `macos-x64`, `linux-x64`,
-and `linux-arm64`, attaches them (plus `SHA256SUMS` and `Formula/mcc.rb`) to the
-release, and regenerates `Formula/mcc.rb` with the new version and checksums.
-
-**One-time Homebrew tap setup** (so `brew install mcc` works):
-
-1. Create a public repo named `homebrew-tap` under your account.
-2. Create a token with write access to it and add it to this repo's
-   secrets as `HOMEBREW_TAP_TOKEN`.
-
-On each release the workflow pushes the updated `Formula/mcc.rb` to that tap repo.
-Users then run `brew tap husseinAbdElaziz/tap && brew install mcc`.
 
 ## Platform Support
 

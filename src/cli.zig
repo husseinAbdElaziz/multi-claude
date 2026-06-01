@@ -9,6 +9,7 @@ pub const Command = enum {
     ls,
     which,
     doctor,
+    uninstall,
     help,
     version,
 };
@@ -18,6 +19,7 @@ pub const ParsedCli = struct {
     profile: ?[]u8 = null,
     no_share: bool = false,
     verbose: bool = false,
+    yes: bool = false,
     extra_args: []const []const u8 = &.{},
 };
 
@@ -48,6 +50,13 @@ pub fn parse(allocator: Allocator, args: []const []const u8) !ParsedCli {
     // mcc ls
     if (std.mem.eql(u8, first, "ls")) {
         var result: ParsedCli = .{ .command = .ls };
+        parseFlags(&result, args[1..]);
+        return result;
+    }
+
+    // mcc uninstall [--yes]
+    if (std.mem.eql(u8, first, "uninstall")) {
+        var result: ParsedCli = .{ .command = .uninstall };
         parseFlags(&result, args[1..]);
         return result;
     }
@@ -110,6 +119,11 @@ fn parseFlags(result: *ParsedCli, args: []const []const u8) void {
         }
         if (std.mem.eql(u8, arg, "--no-share")) {
             result.no_share = true;
+        }
+        if (std.mem.eql(u8, arg, "--yes") or std.mem.eql(u8, arg, "-y") or
+            std.mem.eql(u8, arg, "--force") or std.mem.eql(u8, arg, "-f"))
+        {
+            result.yes = true;
         }
     }
 }

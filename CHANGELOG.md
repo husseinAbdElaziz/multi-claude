@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `mcc uninstall` command to remove mcc's data directory (`~/.multi-claude`) and the binary, with a confirmation prompt (`--yes`/`-y` to skip). Detects Homebrew-managed installs and defers to `brew uninstall`; never touches `~/.claude`.
+
 ## [0.1.0] - 2026-06-01
 
 Initial release.
