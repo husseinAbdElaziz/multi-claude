@@ -9,15 +9,23 @@ const Log = @import("log.zig").Log;
 const Init = std.process.Init.Minimal;
 const Io = std.Io;
 
-fn getIo() Io {
-    return Io.Threaded.global_single_threaded.io();
+/// Build a properly-initialized threaded Io for spawning child processes.
+///
+/// The global `Io.Threaded.global_single_threaded` instance uses a *failing*
+/// allocator, so any `std.process.spawn` through it returns `OutOfMemory`.
+/// Spawning needs a real allocator, and the parent `environ` is required so
+/// `argv[0]` (e.g. "claude") can be resolved against `PATH`.
+fn spawnIo(allocator: Allocator, init: Init) Io.Threaded {
+    return Io.Threaded.init(allocator, .{ .environ = init.environ });
 }
 
 /// Run the default profile (equivalent to running `claude` directly)
 pub fn runDefault(allocator: Allocator, logger: Log, init: Init) !void {
     _ = logger;
 
-    const io = getIo();
+    var threaded = spawnIo(allocator, init);
+    defer threaded.deinit();
+    const io = threaded.io();
 
     // Build env map with parent environment
     var env_map = try std.process.Environ.createMap(init.environ, allocator);
@@ -32,7 +40,9 @@ pub fn runDefault(allocator: Allocator, logger: Log, init: Init) !void {
 
 /// Run a specific profile
 pub fn runProfile(allocator: Allocator, logger: Log, profile_name: []const u8, extra_args: []const []const u8, init: Init) !void {
-    const io = getIo();
+    var threaded = spawnIo(allocator, init);
+    defer threaded.deinit();
+    const io = threaded.io();
 
     const profile_config = try config.profileConfigDir(allocator, profile_name);
     defer allocator.free(profile_config);
