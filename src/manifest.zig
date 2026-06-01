@@ -28,11 +28,15 @@ pub const Manifest = struct {
 
     /// Parse from ZON format (simple parser)
     pub fn fromZon(allocator: Allocator, data: []const u8) !Manifest {
+        // `name` starts as an owned empty string so it is never `undefined`:
+        // a corrupt manifest missing `.name` still yields a value that callers
+        // can safely `allocator.free`.
         var manifest: Manifest = .{
-            .name = undefined,
+            .name = try allocator.dupe(u8, ""),
             .shared = true,
             .created_at = 0,
         };
+        errdefer allocator.free(manifest.name);
 
         // Parse .name field
         const name_idx = std.mem.indexOf(u8, data, ".name");
@@ -48,6 +52,7 @@ pub const Manifest = struct {
                 if (value.len >= 1 and value[0] == '.') {
                     value = value[1..];
                 }
+                allocator.free(manifest.name);
                 manifest.name = try allocator.dupe(u8, value);
             }
         }

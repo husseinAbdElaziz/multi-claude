@@ -4,11 +4,15 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Single shared module for all source files
+    // Single shared module for all source files.
+    // `link_libc` is required: config.zig uses libc `getenv` and fsx.zig uses
+    // `std.c.symlink`. macOS links libc implicitly, but Linux does not, so
+    // without this the build fails on Linux CI.
     const src_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
     const exe = b.addExecutable(.{

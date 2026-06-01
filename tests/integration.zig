@@ -39,27 +39,6 @@ fn setupFakeClaudeDir(allocator: std.mem.Allocator, base: []const u8) !void {
     try fsx.atomicWrite(allocator, claude_md, "# Test Memory\n");
 }
 
-/// Create a fake claude shim script that records CLAUDE_CONFIG_DIR
-fn createClaudeShim(allocator: std.mem.Allocator, base: []const u8) ![]u8 {
-    const shim_path = try std.fmt.allocPrint(allocator, "{s}/fake_claude.sh", .{base});
-    const content =
-        \\#!/usr/bin/env bash
-        \\echo "$CLAUDE_CONFIG_DIR" > "{s}/claude_config_dir.txt"
-        \\exit 0
-    ;
-
-    try fsx.atomicWrite(allocator, shim_path, std.fmt.comptimePrint(content, .{base}));
-
-    // Make executable
-    const io = getIo();
-    const file = Io.Dir.openFileAbsolute(io, shim_path, .{ .mode = .read_write }) catch unreachable;
-    defer Io.File.close(file, io);
-    const stat = Io.File.stat(file, io) catch unreachable;
-    _ = std.posix.fchmod(stat.inode, std.posix.S.IRWXU) catch {};
-
-    return shim_path;
-}
-
 test "integration: create shared profile and verify symlinks" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
@@ -86,10 +65,7 @@ test "integration: create shared profile and verify symlinks" {
     defer gpa.free(profiles_dir);
     try fsx.mkdirAll(profiles_dir);
 
-    _ = Log.init(false);
-
-    // We can't easily override HOME env vars in tests, so we test composer directly
-    // Create the profile directory manually
+    // Create the profile directory manually (HOME-independent test).
     const prof_dir = try std.fmt.allocPrint(gpa, "{s}/testprof", .{profiles_dir});
     defer gpa.free(prof_dir);
     try fsx.mkdirAll(prof_dir);
@@ -118,30 +94,15 @@ test "integration: create shared profile and verify symlinks" {
     try std.testing.expectEqualStrings("testprof", loaded.name);
     try std.testing.expect(loaded.shared);
 
-    // Verify compose creates config dir
+    // Drive the REAL composer against the fake dirs (exercises the shipped
+    // symlink/policy logic, not a re-implementation).
     const config_dir = try std.fmt.allocPrint(gpa, "{s}/config", .{prof_dir});
     defer gpa.free(config_dir);
-    try fsx.mkdirAll(config_dir);
 
-    // Manually create symlinks for shared resources (simulating composer)
     const claude_dir = try std.fmt.allocPrint(gpa, "{s}/.claude", .{tmp_dir});
     defer gpa.free(claude_dir);
 
-    for (resources.resources) |resource| {
-        const should_share = resources.policy(resource, true);
-        if (!should_share) continue;
-
-        const source_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ claude_dir, resource.path });
-        defer gpa.free(source_path);
-
-        if (!fsx.exists(source_path)) continue;
-
-        const target_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ config_dir, resource.path });
-        defer gpa.free(target_path);
-
-        try fsx.remove(target_path);
-        try fsx.symlinkCreate(source_path, target_path);
-    }
+    try composer.composeInto(gpa, Log.init(false), claude_dir, config_dir, true);
 
     // Verify symlinks exist for shared resources
     const settings_link = try std.fmt.allocPrint(gpa, "{s}/settings.json", .{config_dir});
@@ -199,22 +160,15 @@ test "integration: create isolated profile and verify no symlinks" {
     defer gpa.free(zon);
     try fsx.atomicWrite(gpa, manifest_path, zon);
 
-    // Create config dir (for isolated, no symlinks)
+    // Drive the REAL composer in isolated mode: nothing is shared, so private
+    // directories are created and no symlinks are produced.
     const config_dir = try std.fmt.allocPrint(gpa, "{s}/config", .{prof_dir});
     defer gpa.free(config_dir);
-    try fsx.mkdirAll(config_dir);
 
-    // For isolated profile, create private directories (no symlinks)
-    for (resources.resources) |resource| {
-        const should_share = resources.policy(resource, false);
-        try std.testing.expect(!should_share);
+    const claude_dir = try std.fmt.allocPrint(gpa, "{s}/.claude", .{tmp_dir});
+    defer gpa.free(claude_dir);
 
-        if (resource.is_dir) {
-            const target_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ config_dir, resource.path });
-            defer gpa.free(target_path);
-            try fsx.mkdirAll(target_path);
-        }
-    }
+    try composer.composeInto(gpa, Log.init(false), claude_dir, config_dir, false);
 
     // Verify private directories exist and are NOT symlinks
     const sessions_dir = try std.fmt.allocPrint(gpa, "{s}/sessions", .{config_dir});

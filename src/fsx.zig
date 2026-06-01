@@ -45,14 +45,16 @@ pub fn mkdirAll(path: []const u8) !void {
     };
 }
 
-/// Check if a path exists (file or directory)
+/// Check if a path exists (file or directory). Any access error (not found,
+/// permission, etc.) is treated as "does not exist".
 pub fn exists(path: []const u8) bool {
     const io = getIo();
     if (std.fs.path.isAbsolute(path)) {
-        return Io.Dir.accessAbsolute(io, path, .{}) != error.FileNotFound;
+        Io.Dir.accessAbsolute(io, path, .{}) catch return false;
     } else {
-        return Io.Dir.statFile(Io.Dir.cwd(), io, path, .{}) != error.FileNotFound;
+        _ = Io.Dir.statFile(Io.Dir.cwd(), io, path, .{}) catch return false;
     }
+    return true;
 }
 
 /// Delete a file or symlink (idempotent - ignores if not found)

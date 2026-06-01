@@ -56,16 +56,20 @@ pub fn runProfile(allocator: Allocator, logger: Log, profile_name: []const u8, e
     };
     try composer.compose(allocator, logger, profile_name, shared);
 
-    // Acquire advisory lock
+    // Acquire an advisory lock for the profile and hold it for the entire
+    // lifetime of the child `claude`. We deliberately do NOT release it in this
+    // function: the lock must stay held until `claude` exits, and
+    // `propagateTerm` ends this process via `std.process.exit` (which skips
+    // `defer`s). The kernel releases the flock when our fd is closed on exit.
     const lock_path = try config.profileLockPath(allocator, profile_name);
     defer allocator.free(lock_path);
 
-    const lock_file = lock.tryAcquire(lock_path) catch |err| {
-        logger.warn("failed to acquire lock for profile '{s}': {}", .{ profile_name, err });
-        return err;
+    const lock_file = lock.tryAcquire(lock_path) catch |err| blk: {
+        logger.warn("could not lock profile '{s}': {} — launching anyway", .{ profile_name, err });
+        break :blk null;
     };
-    if (lock_file) |file| {
-        defer lock.release(file);
+    if (lock_file == null) {
+        logger.warn("profile '{s}' appears to be running already; launching anyway", .{profile_name});
     }
 
     // Build argv: claude <extra_args>
