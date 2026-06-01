@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        zig_version: ["0.16.0"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig ${{ matrix.zig_version }}
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ matrix.zig_version }}
+
+      - name: Build (Debug)
+        run: zig build
+
+      - name: Build (ReleaseSafe)
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Run tests
+        run: zig build test --summary all
+
+      - name: Upload ReleaseSafe binary
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcc-linux-x64
+          path: zig-out/bin/mcc
+          retention-days: 30
