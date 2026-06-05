@@ -11,6 +11,8 @@ pub const Command = enum {
     doctor,
     update,
     uninstall,
+    ui,
+    proxy, // internal: spawned by launcher
     help,
     version,
 };
@@ -21,6 +23,7 @@ pub const ParsedCli = struct {
     no_share: bool = false,
     verbose: bool = false,
     yes: bool = false,
+    port: u16 = 8989,
     extra_args: []const []const u8 = &.{},
 };
 
@@ -66,6 +69,29 @@ pub fn parse(allocator: Allocator, args: []const []const u8) !ParsedCli {
     if (std.mem.eql(u8, first, "uninstall")) {
         var result: ParsedCli = .{ .command = .uninstall };
         parseFlags(&result, args[1..]);
+        return result;
+    }
+
+    // mcc __proxy__ <profile> <port>  (internal — spawned by launcher)
+    if (std.mem.eql(u8, first, "__proxy__")) {
+        var result: ParsedCli = .{ .command = .proxy };
+        if (args.len >= 2) result.profile = try allocator.dupe(u8, args[1]);
+        if (args.len >= 3) result.port = std.fmt.parseInt(u16, args[2], 10) catch 0;
+        return result;
+    }
+
+    // mcc ui [--port <n>]
+    if (std.mem.eql(u8, first, "ui")) {
+        var result: ParsedCli = .{ .command = .ui };
+        var i: usize = 1;
+        while (i < args.len) : (i += 1) {
+            if (std.mem.eql(u8, args[i], "--port") and i + 1 < args.len) {
+                result.port = std.fmt.parseInt(u16, args[i + 1], 10) catch 8989;
+                i += 1;
+            } else if (std.mem.startsWith(u8, args[i], "--port=")) {
+                result.port = std.fmt.parseInt(u16, args[i][7..], 10) catch 8989;
+            }
+        }
         return result;
     }
 

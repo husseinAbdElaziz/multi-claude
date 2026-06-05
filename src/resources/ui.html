@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mcc — Provider Config</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #1a1b1e;
+    --surface: #25262b;
+    --border: #373a40;
+    --text: #c1c2c5;
+    --text-dim: #5c5f66;
+    --accent: #4dabf7;
+    --accent-hover: #74c0fc;
+    --success: #69db7c;
+    --error: #ff6b6b;
+    --warning: #ffd43b;
+    --radius: 8px;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 14px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+  }
+
+  header span {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-left: auto;
+  }
+
+  .layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* Sidebar */
+  .sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 12px 8px;
+  }
+
+  .sidebar-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    padding: 0 8px 8px;
+  }
+
+  .profile-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    color: var(--text);
+    transition: background 0.1s;
+    user-select: none;
+  }
+
+  .profile-item:hover { background: var(--surface); }
+  .profile-item.active { background: var(--surface); color: #fff; }
+
+  .profile-item .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--border);
+    flex-shrink: 0;
+  }
+
+  .profile-item .dot.configured { background: var(--success); }
+
+  .profile-item .name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .profile-item.default-item { border-bottom: 1px solid var(--border); margin-bottom: 8px; padding-bottom: 12px; border-radius: 0; }
+
+  /* Main panel */
+  .main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 28px 32px;
+    max-width: 600px;
+  }
+
+  .panel-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 4px;
+  }
+
+  .panel-subtitle {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-bottom: 28px;
+    line-height: 1.5;
+  }
+
+  .inherit-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255, 212, 59, 0.12);
+    color: var(--warning);
+    border: 1px solid rgba(255, 212, 59, 0.25);
+    border-radius: 20px;
+    padding: 4px 10px;
+    font-size: 12px;
+    margin-bottom: 20px;
+  }
+
+  .field { margin-bottom: 20px; }
+
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: #ddd;
+    margin-bottom: 6px;
+  }
+
+  label .hint {
+    font-weight: 400;
+    color: var(--text-dim);
+    margin-left: 4px;
+  }
+
+  input[type="text"],
+  input[type="password"],
+  input[type="url"] {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    padding: 9px 12px;
+    font-size: 14px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  input:focus { border-color: var(--accent); }
+  input::placeholder { color: var(--text-dim); }
+
+  .actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 28px;
+  }
+
+  button {
+    padding: 9px 18px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    transition: opacity 0.15s, background 0.15s;
+  }
+
+  button:active { opacity: 0.85; }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #1a1b1e;
+  }
+
+  .btn-primary:hover { background: var(--accent-hover); }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+
+  .btn-ghost:hover { background: var(--surface); }
+
+  .btn-danger {
+    background: transparent;
+    color: var(--error);
+    border: 1px solid rgba(255, 107, 107, 0.3);
+    margin-left: auto;
+  }
+
+  .btn-danger:hover { background: rgba(255, 107, 107, 0.08); }
+
+  .status {
+    margin-top: 16px;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    display: none;
+  }
+
+  .status.ok { background: rgba(105, 219, 124, 0.1); color: var(--success); border: 1px solid rgba(105, 219, 124, 0.2); display: block; }
+  .status.err { background: rgba(255, 107, 107, 0.1); color: var(--error); border: 1px solid rgba(255, 107, 107, 0.2); display: block; }
+
+  .providers-hint {
+    margin-top: 36px;
+    padding: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  .providers-hint h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: #ddd;
+    margin-bottom: 12px;
+  }
+
+  .provider-preset {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .provider-preset:last-child { border-bottom: none; }
+
+  .provider-preset .label { font-weight: 500; }
+
+  .provider-preset .url {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .preset-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid rgba(77, 171, 247, 0.3);
+    border-radius: 4px;
+  }
+
+  .preset-btn:hover { background: rgba(77, 171, 247, 0.08); }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-dim);
+    gap: 8px;
+  }
+
+  .empty-state svg { opacity: 0.3; }
+  .empty-state p { font-size: 15px; }
+
+  .loading { opacity: 0.5; pointer-events: none; }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+<header>
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4dabf7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
+  </svg>
+  <h1>mcc Provider Config</h1>
+  <span>Local LLMs &amp; custom API endpoints</span>
+</header>
+
+<div class="layout">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-label">Profiles</div>
+    <div id="profile-list">
+      <div class="profile-item default-item" data-name="default" onclick="selectProfile('default')">
+        <span class="dot" id="dot-default"></span>
+        <span class="name">Default (all profiles)</span>
+      </div>
+    </div>
+  </nav>
+
+  <main class="main" id="main">
+    <div class="empty-state">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      <p>Select a profile to configure</p>
+    </div>
+  </main>
+</div>
+
+<script>
+const PRESETS = [
+  { name: 'Ollama', url: 'http://localhost:11434/v1', key: 'ollama', model: '' },
+  { name: 'LM Studio', url: 'http://localhost:1234/v1', key: 'lm-studio', model: '' },
+  { name: 'OpenAI', url: 'https://api.openai.com/v1', key: '', model: 'gpt-4o' },
+  { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1', key: '', model: '' },
+];
+
+let currentProfile = null;
+let profiles = [];
+
+async function loadProfiles() {
+  try {
+    const r = await fetch('/api/profiles');
+    profiles = await r.json();
+    renderSidebar();
+  } catch (e) {
+    console.error('Failed to load profiles', e);
+  }
+}
+
+function renderSidebar() {
+  const list = document.getElementById('profile-list');
+  // preserve default item
+  const defaultItem = list.querySelector('.default-item');
+  list.innerHTML = '';
+  list.appendChild(defaultItem);
+
+  for (const p of profiles) {
+    const item = document.createElement('div');
+    item.className = 'profile-item' + (currentProfile === p.name ? ' active' : '');
+    item.dataset.name = p.name;
+    item.onclick = () => selectProfile(p.name);
+    item.innerHTML = `
+      <span class="dot ${p.hasProvider ? 'configured' : ''}" id="dot-${p.name}"></span>
+      <span class="name">${esc(p.name)}</span>
+    `;
+    list.appendChild(item);
+  }
+
+  // update active state
+  updateSidebarActive();
+}
+
+function updateSidebarActive() {
+  document.querySelectorAll('.profile-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.name === currentProfile);
+  });
+}
+
+async function selectProfile(name) {
+  currentProfile = name;
+  updateSidebarActive();
+  renderForm(name, null);
+
+  try {
+    const r = await fetch(`/api/provider?name=${encodeURIComponent(name)}`);
+    const data = await r.json();
+    renderForm(name, data);
+  } catch (e) {
+    showStatus('err', 'Failed to load config');
+  }
+}
+
+function renderForm(name, data) {
+  const isDefault = name === 'default';
+  const title = isDefault ? 'Default Provider' : `Profile: ${esc(name)}`;
+  const subtitle = isDefault
+    ? 'Applies to all profiles that don\'t have a specific provider configured.'
+    : 'Overrides the default provider for this profile only.';
+
+  const inherits = !isDefault && (!data || (!data.api_url && !data.api_key && !data.model));
+
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="panel-title">${title}</div>
+    <div class="panel-subtitle">${subtitle}</div>
+    ${inherits ? '<div class="inherit-badge"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>Inherits from Default</div>' : ''}
+
+    <div class="field">
+      <label>API Base URL <span class="hint">e.g. http://localhost:11434/v1</span></label>
+      <input type="url" id="f-url" placeholder="https://api.anthropic.com" value="${esc(data?.api_url || '')}">
+    </div>
+
+    <div class="field">
+      <label>API Key <span class="hint">optional</span></label>
+      <input type="password" id="f-key" placeholder="sk-..." value="${esc(data?.api_key || '')}">
+    </div>
+
+    <div class="field">
+      <label>Model <span class="hint">optional override</span></label>
+      <input type="text" id="f-model" placeholder="e.g. llama3.2:latest, claude-opus-4-8" value="${esc(data?.model || '')}">
+    </div>
+
+    <div class="actions">
+      <button class="btn-primary" onclick="saveConfig()">Save</button>
+      <button class="btn-ghost" onclick="resetForm()">Reset</button>
+      <button class="btn-danger" onclick="clearConfig()">Clear</button>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <div class="providers-hint">
+      <h3>Common Providers</h3>
+      ${PRESETS.map(p => `
+        <div class="provider-preset">
+          <div>
+            <div class="label">${esc(p.name)}</div>
+            <div class="url">${esc(p.url)}</div>
+          </div>
+          <button class="preset-btn" onclick='applyPreset(${JSON.stringify(p)})'>Use</button>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function applyPreset(p) {
+  document.getElementById('f-url').value = p.url;
+  document.getElementById('f-key').value = p.key;
+  document.getElementById('f-model').value = p.model;
+}
+
+async function saveConfig() {
+  const url = document.getElementById('f-url').value.trim();
+  const key = document.getElementById('f-key').value.trim();
+  const model = document.getElementById('f-model').value.trim();
+
+  const body = {
+    api_url: url || null,
+    api_key: key || null,
+    model: model || null,
+  };
+
+  try {
+    const r = await fetch(`/api/provider?name=${encodeURIComponent(currentProfile)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (data.ok) {
+      showStatus('ok', 'Saved successfully');
+      const hasConfig = !!(url || key || model);
+      updateDot(currentProfile, hasConfig);
+      if (currentProfile !== 'default') {
+        const p = profiles.find(x => x.name === currentProfile);
+        if (p) p.hasProvider = hasConfig;
+        renderSidebar();
+        updateSidebarActive();
+      }
+    } else {
+      showStatus('err', data.error || 'Save failed');
+    }
+  } catch (e) {
+    showStatus('err', 'Request failed');
+  }
+}
+
+async function clearConfig() {
+  if (!confirm(`Clear provider config for "${currentProfile}"?`)) return;
+  try {
+    await fetch(`/api/provider?name=${encodeURIComponent(currentProfile)}`, { method: 'DELETE' });
+    showStatus('ok', 'Config cleared');
+    updateDot(currentProfile, false);
+    if (currentProfile !== 'default') {
+      const p = profiles.find(x => x.name === currentProfile);
+      if (p) p.hasProvider = false;
+    }
+    await selectProfile(currentProfile);
+  } catch (e) {
+    showStatus('err', 'Request failed');
+  }
+}
+
+function resetForm() {
+  selectProfile(currentProfile);
+}
+
+function updateDot(name, configured) {
+  const dot = document.getElementById(`dot-${name}`);
+  if (dot) dot.className = `dot ${configured ? 'configured' : ''}`;
+}
+
+function showStatus(type, msg) {
+  const s = document.getElementById('status');
+  if (!s) return;
+  s.className = `status ${type}`;
+  s.textContent = msg;
+  setTimeout(() => { s.className = 'status'; }, 3000);
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Check if default provider is configured
+async function checkDefault() {
+  try {
+    const r = await fetch('/api/provider?name=default');
+    const d = await r.json();
+    const has = !!(d.api_url || d.api_key || d.model);
+    updateDot('default', has);
+  } catch {}
+}
+
+loadProfiles();
+checkDefault();
+</script>
+</body>
+</html>

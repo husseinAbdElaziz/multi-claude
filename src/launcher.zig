@@ -4,6 +4,10 @@ const config = @import("config.zig");
 const composer = @import("composer.zig");
 const manifest = @import("manifest.zig");
 const lock = @import("lock.zig");
+const provider_mod = @import("provider.zig");
+const providers_mod = @import("providers.zig");
+const proxy_mod = @import("proxy.zig");
+const fsx = @import("fsx.zig");
 const Log = @import("log.zig").Log;
 
 const Init = std.process.Init.Minimal;
@@ -72,27 +76,142 @@ pub fn runProfile(allocator: Allocator, logger: Log, profile_name: []const u8, e
         logger.warn("profile '{s}' appears to be running already; launching anyway", .{profile_name});
     }
 
-    // Build argv: claude <extra_args>
-    var argv_list = std.ArrayList([]const u8).initCapacity(allocator, extra_args.len + 1) catch unreachable;
-    defer argv_list.deinit(allocator);
-
-    try argv_list.append(allocator, "claude");
-    for (extra_args) |arg| {
-        try argv_list.append(allocator, arg);
-    }
-    const argv = try argv_list.toOwnedSlice(allocator);
-    defer allocator.free(argv);
-
-    // Build environment: clone parent + set CLAUDE_CONFIG_DIR
+    // Build environment: clone parent + set CLAUDE_CONFIG_DIR + provider vars
     var env_map = try std.process.Environ.createMap(init.environ, allocator);
     defer env_map.deinit();
     try env_map.put("CLAUDE_CONFIG_DIR", profile_config);
 
-    var child = try std.process.spawn(io, .{
+    // Load single-provider config (provider.json). For openai_compat endpoints (e.g. LM Studio)
+    // synthesize a providers.json so the proxy handles Anthropic→OpenAI translation.
+    // For anthropic_compat endpoints set env vars directly (no proxy needed).
+    // model_arg is owned here and outlives spawn (argv holds a reference into it).
+    var model_arg: ?[]u8 = null;
+    defer if (model_arg) |m| allocator.free(m);
+
+    {
+        const maybe_prov = provider_mod.load(allocator, profile_name) catch null;
+        if (maybe_prov) |p| {
+            var pp = p;
+            defer pp.deinit(allocator);
+
+            // Disown model so deinit doesn't free it; we track lifetime via model_arg.
+            if (pp.model) |m| {
+                pp.model = null;
+                model_arg = m;
+            }
+
+            if (pp.openai_compat) {
+                // Always re-synthesize providers.json from provider.json so URL/model changes
+                // take effect immediately. startProxyIfNeeded will find it.
+                var models_list = std.ArrayList([]u8).empty;
+                defer models_list.deinit(allocator);
+                if (model_arg) |m| try models_list.append(allocator, m);
+                const owned_models = try models_list.toOwnedSlice(allocator);
+                const entry = providers_mod.ProviderEntry{
+                    .name = try allocator.dupe(u8, "provider"),
+                    .provider_type = .openai_compat,
+                    .api_url = try allocator.dupe(u8, pp.api_url orelse ""),
+                    .api_key = if (pp.api_key) |k| try allocator.dupe(u8, k) else null,
+                    .models = owned_models,
+                };
+                const entries = try allocator.alloc(providers_mod.ProviderEntry, 1);
+                entries[0] = entry;
+                var cfg = providers_mod.Config{ .entries = entries };
+                try providers_mod.save(allocator, profile_name, cfg);
+                cfg.entries[0].models = &.{}; // model_arg owns the strings, prevent double-free
+                cfg.deinit(allocator);
+                logger.info("configured openai_compat provider proxy", .{});
+            } else {
+                // anthropic_compat: pass through directly, no translation needed.
+                if (pp.api_url) |url| try env_map.put("ANTHROPIC_BASE_URL", url);
+                if (pp.api_key) |key| try env_map.put("ANTHROPIC_API_KEY", key);
+            }
+        }
+    }
+
+    // Start proxy if multi-provider config exists (providers.json) — including synthesized above.
+    var proxy_child: ?std.process.Child = null;
+    const proxy_port = startProxyIfNeeded(allocator, logger, io, init, profile_name, &env_map, &proxy_child) catch |err| blk: {
+        logger.warn("proxy start failed: {} — launching without proxy", .{err});
+        break :blk 0;
+    };
+    _ = proxy_port;
+
+    var argv_list = std.ArrayList([]const u8).empty;
+    defer argv_list.deinit(allocator);
+    try argv_list.append(allocator, "claude");
+    if (model_arg) |m| try argv_list.appendSlice(allocator, &.{ "--model", m });
+    for (extra_args) |arg| try argv_list.append(allocator, arg);
+    const argv = try argv_list.toOwnedSlice(allocator);
+    defer allocator.free(argv);
+
+    var claude_child = try std.process.spawn(io, .{
         .argv = argv,
         .environ_map = &env_map,
     });
-    propagateTerm(child.wait(io) catch return);
+
+    const term = claude_child.wait(io) catch {
+        if (proxy_child) |*pc| { pc.kill(io); }
+        return;
+    };
+    if (proxy_child) |*pc| { pc.kill(io); }
+    propagateTerm(term);
+}
+
+/// If providers.json exists for the profile, spawn the proxy subprocess and
+/// update env_map with ANTHROPIC_BASE_URL + internal token.
+/// Returns the proxy port (0 if no proxy started). Sets child_out on success.
+fn startProxyIfNeeded(
+    allocator: Allocator,
+    logger: Log,
+    io: Io,
+    init: Init,
+    profile_name: []const u8,
+    env_map: *std.process.Environ.Map,
+    child_out: *?std.process.Child,
+) !u16 {
+    var pcfg = providers_mod.load(allocator, profile_name) catch return 0;
+    if (pcfg == null) return 0;
+    const entry_count = pcfg.?.entries.len;
+    pcfg.?.deinit(allocator);
+    if (entry_count == 0) return 0;
+
+    var port_io = Io.Threaded.init(allocator, .{ .environ = init.environ });
+    defer port_io.deinit();
+    const port = proxy_mod.findFreePort(port_io.io()) catch return 0;
+    const port_str = try std.fmt.allocPrint(allocator, "{d}", .{port});
+    defer allocator.free(port_str);
+
+    logger.info("starting provider proxy on port {d}", .{port});
+
+    // Proxy inherits original environ so it has the real ANTHROPIC_API_KEY.
+    var proxy_env = try std.process.Environ.createMap(init.environ, allocator);
+    defer proxy_env.deinit();
+
+    var exe_io = Io.Threaded.init(allocator, .{ .environ = init.environ });
+    defer exe_io.deinit();
+    const self_exe = std.process.executablePathAlloc(exe_io.io(), allocator) catch null;
+    defer if (self_exe) |p| allocator.free(p);
+
+    // Use the caller's io so kill/wait on the child work with the same io.
+    const child = try std.process.spawn(io, .{
+        .argv = &.{ self_exe orelse return error.SelfExeNotFound, "__proxy__", profile_name, port_str },
+        .environ_map = &proxy_env,
+    });
+    child_out.* = child;
+
+    // Give proxy time to bind the port before Claude Code starts.
+    const ts = std.c.timespec{ .sec = 0, .nsec = 200_000_000 };
+    _ = std.c.nanosleep(&ts, null);
+
+    const proxy_url = try std.fmt.allocPrint(allocator, "http://localhost:{d}", .{port});
+    defer allocator.free(proxy_url);
+    const token = try proxy_mod.internalToken(allocator, port);
+    defer allocator.free(token);
+
+    try env_map.put("ANTHROPIC_BASE_URL", proxy_url);
+    try env_map.put("ANTHROPIC_API_KEY", token);
+    return port;
 }
 
 fn propagateTerm(term: std.process.Child.Term) noreturn {

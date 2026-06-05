@@ -13,6 +13,8 @@ pub const log = @import("log.zig");
 pub const doctor = @import("doctor.zig");
 pub const update = @import("update.zig");
 pub const uninstall = @import("uninstall.zig");
+pub const web = @import("web.zig");
+pub const proxy = @import("proxy.zig");
 
 /// Calculate simple Levenshtein distance between two strings
 pub fn levenshtein(a: []const u8, b: []const u8) usize {
@@ -161,6 +163,26 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .uninstall => {
             try uninstall.run(gpa, logger, parsed.yes);
         },
+        .ui => {
+            try web.serve(gpa, logger, init, parsed.port);
+        },
+        .proxy => {
+            const pname = parsed.profile orelse {
+                logger.err("proxy: profile required", .{});
+                std.process.exit(1);
+            };
+            const port = parsed.port;
+            if (port == 0) {
+                logger.err("proxy: invalid port", .{});
+                std.process.exit(1);
+            }
+            const api_key = config.getEnvVar(gpa, "ANTHROPIC_API_KEY") catch null orelse try gpa.dupe(u8, "");
+            defer gpa.free(api_key);
+
+            var threaded = std.Io.Threaded.init(gpa, .{ .environ = init.environ });
+            defer threaded.deinit();
+            try proxy.run(gpa, logger, threaded.io(), pname, port, api_key);
+        },
         .help => {
             printUsage();
         },
@@ -184,6 +206,7 @@ fn printUsage() void {
         \\  ls                     List all profiles
         \\  which <profile>        Show config directory for a profile
         \\  doctor                 Check environment configuration
+        \\  ui [--port <n>]        Open provider config UI (default port 8989)
         \\  update                 Update mcc to the latest release
         \\  uninstall [--yes]      Remove mcc data (~/.multi-claude) and the binary
         \\
