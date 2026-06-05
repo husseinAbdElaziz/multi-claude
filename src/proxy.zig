@@ -224,9 +224,12 @@ fn handleMessages(
     cfg: ?providers_mod.Config,
     anthropic_api_key: []const u8,
 ) !void {
-    // Extract auth headers BEFORE reading the body — iterateHeaders asserts received_head state.
+    // Collect headers BEFORE reading body — iterateHeaders asserts received_head state.
+    // Gather all client headers; auth is replaced, low-level transport headers are dropped.
     var client_auth_hdr: []const u8 = "";
     var client_auth_name: []const u8 = "authorization";
+    var passthrough_headers = std.ArrayList(std.http.Header).empty;
+    defer passthrough_headers.deinit(allocator);
     {
         var it = req.iterateHeaders();
         while (it.next()) |h| {
@@ -237,7 +240,14 @@ fn handleMessages(
                     client_auth_hdr = h.value;
                     client_auth_name = h.name;
                 }
+                continue; // auth handled separately
             }
+            // Drop transport-level headers; keep everything else (anthropic-version, anthropic-beta, etc.)
+            if (std.ascii.eqlIgnoreCase(h.name, "host") or
+                std.ascii.eqlIgnoreCase(h.name, "content-length") or
+                std.ascii.eqlIgnoreCase(h.name, "connection") or
+                std.ascii.eqlIgnoreCase(h.name, "transfer-encoding")) continue;
+            try passthrough_headers.append(allocator, h);
         }
     }
 
@@ -266,7 +276,7 @@ fn handleMessages(
 
     if (is_claude or provider == null) {
         // Anthropic passthrough
-        try forwardToAnthropic(allocator, io, req, path, body, anthropic_api_key, client_auth_hdr, client_auth_name, model, is_streaming);
+        try forwardToAnthropic(allocator, io, req, path, body, anthropic_api_key, client_auth_hdr, client_auth_name, passthrough_headers.items, model, is_streaming);
     } else {
         const p = provider.?;
         switch (p.provider_type) {
@@ -294,6 +304,7 @@ fn forwardToAnthropic(
     api_key: []const u8,
     client_auth_hdr: []const u8,
     client_auth_name: []const u8,
+    passthrough: []const std.http.Header,
     model: []const u8,
     is_streaming: bool,
 ) !void {
@@ -303,11 +314,13 @@ fn forwardToAnthropic(
     const auth_name = if (api_key.len > 0) "x-api-key" else client_auth_name;
     const auth_val = if (api_key.len > 0) api_key else client_auth_hdr;
 
-    try forwardPassthrough(allocator, io, req, url, body, &.{
-        .{ .name = auth_name, .value = auth_val },
-        .{ .name = "anthropic-version", .value = ANTHROPIC_VERSION },
-        .{ .name = "content-type", .value = "application/json" },
-    }, model, is_streaming, false);
+    // Build headers: auth + all passthrough headers from client (preserves anthropic-version, anthropic-beta, etc.)
+    const hdrs = try allocator.alloc(std.http.Header, 1 + passthrough.len);
+    defer allocator.free(hdrs);
+    hdrs[0] = .{ .name = auth_name, .value = auth_val };
+    @memcpy(hdrs[1..], passthrough);
+
+    try forwardPassthrough(allocator, io, req, url, body, hdrs, model, is_streaming, false);
 }
 
 /// Forward request as-is to an Anthropic-compatible provider (OpenRouter etc.).
@@ -378,18 +391,13 @@ fn forwardPassthrough(
         return;
     };
 
-    // Append accept-encoding: identity so upstream never returns a compressed body.
-    const all_headers = try allocator.alloc(std.http.Header, headers.len + 1);
-    defer allocator.free(all_headers);
-    @memcpy(all_headers[0..headers.len], headers);
-    all_headers[headers.len] = .{ .name = "accept-encoding", .value = "identity" };
-
     var client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer client.deinit();
 
     var upstream = client.request(.POST, uri, .{
-        .extra_headers = all_headers,
+        .extra_headers = headers,
         .keep_alive = false,
+        .headers = .{ .accept_encoding = .{ .override = "identity" } },
     }) catch {
         try req.respond("{\"error\":\"upstream connect failed\"}", .{ .status = .bad_gateway, .keep_alive = false });
         return;
