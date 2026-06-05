@@ -424,6 +424,21 @@ fn forwardPassthrough(
 
     const status: std.http.Status = @enumFromInt(@intFromEnum(response.head.status));
 
+    // Build a reader that transparently decompresses if the upstream used content-encoding.
+    const ce = response.head.content_encoding;
+    const decompress_buf_len = ce.minBufferCapacity();
+    const decompress_buf = if (decompress_buf_len > 0)
+        try allocator.alloc(u8, decompress_buf_len)
+    else
+        try allocator.alloc(u8, 0);
+    defer allocator.free(decompress_buf);
+    var decompress: std.http.Decompress = undefined;
+    var tbuf: [8192]u8 = undefined;
+    const rdr = if (decompress_buf_len > 0)
+        response.readerDecompressing(&tbuf, &decompress, decompress_buf)
+    else
+        response.reader(&tbuf);
+
     if (is_streaming and !do_translate) {
         // Pure SSE passthrough
         var stream_buf: [512]u8 = undefined;
@@ -437,8 +452,6 @@ fn forwardPassthrough(
                 },
             },
         });
-        var tbuf: [4096]u8 = undefined;
-        var rdr = response.reader(&tbuf);
         var chunk: [4096]u8 = undefined;
         while (true) {
             const n = rdr.readSliceShort(&chunk) catch break;
@@ -464,8 +477,6 @@ fn forwardPassthrough(
             },
         });
 
-        var tbuf: [8192]u8 = undefined;
-        var rdr = response.reader(&tbuf);
         var state = translator.StreamState{};
         var line_buf: [8192]u8 = undefined;
         var line_len: usize = 0;
@@ -503,8 +514,6 @@ fn forwardPassthrough(
     }
 
     // Non-streaming: collect full response body
-    var tbuf: [4096]u8 = undefined;
-    var rdr = response.reader(&tbuf);
     var resp_out: Io.Writer.Allocating = .init(allocator);
     defer resp_out.deinit();
     _ = rdr.streamRemaining(&resp_out.writer) catch 0;
