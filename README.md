@@ -78,6 +78,7 @@ mcc new work --no-share
 | `mcc ls`                       | List all profiles                                               |
 | `mcc which <profile>`          | Show the CLAUDE_CONFIG_DIR for a profile                        |
 | `mcc doctor`                   | Verify environment configuration                                |
+| `mcc ui [--port <n>]`          | Open the provider config web UI (default port 8989)             |
 | `mcc update`                   | Update mcc to the latest release (defers to brew if managed)    |
 | `mcc uninstall`                | Remove mcc's data and binary (never touches `~/.claude`)        |
 
@@ -96,6 +97,27 @@ mcc personal -- --resume
 | `--help`, `-h`     | Show help            |
 | `--version`, `-v`  | Show version         |
 | `--verbose`, `-vv` | Enable debug logging |
+
+## Custom Providers
+
+Each profile can point at a custom model endpoint via a `provider.json` file (per profile, or a global default at `~/.multi-claude/provider.json`). The easiest way to manage it is the web UI:
+
+```bash
+mcc ui                  # default port 8989
+mcc ui --port 9000      # custom port
+```
+
+`provider.json` fields:
+
+| Field     | Description                                                       |
+| --------- | ---------------------------------------------------------------- |
+| `api_url` | Base URL of the endpoint                                         |
+| `api_key` | API key for the endpoint                                        |
+| `model`   | Model name to request                                            |
+| `type`    | `anthropic_compat` or `openai_compat`                            |
+
+- **`anthropic_compat`** — direct base URL + API key override, no proxy required.
+- **`openai_compat`** — routes through a local proxy that translates between the Anthropic and OpenAI Chat Completions APIs, enabling LM Studio, vLLM, and other compatible endpoints.
 
 ## How It Works
 
