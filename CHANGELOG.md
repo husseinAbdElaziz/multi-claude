@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-06-07
+
+### Added
+
+- Update check on launch: when running a profile (`mcc` / `mcc <profile>`), mcc checks GitHub for a newer release and, on an interactive terminal, asks whether to update now (`y` runs `mcc update`; `n` continues). Never updates automatically. The check is throttled to at most once per 24h (cached in `~/.multi-claude/.update_check`) and bounded by a short network timeout; non-interactive shells (pipes/CI) print a one-line notice instead of prompting and never block.
+
+### Security
+
+- Proxy now requires a per-run secret on every request, passed via a custom header (`X-Mcc-Proxy-Secret`) so no other local process or browser page can drive the proxy with the user's real credential. Claude Code's own Anthropic auth flows through untouched for `claude-*` passthrough; the gate header is stripped before forwarding upstream.
+- Provider config UI (`/api/`) now rejects cross-site requests (CSRF) via `Sec-Fetch-Site`/`Origin` checks, and validates profile names against an allowlist to block path traversal.
+- Config files holding API keys are written `0600` (owner-only).
+- UI escapes interpolated profile names to prevent XSS.
+
 ## [0.3.0] - 2026-06-05
 
 ### Added
@@ -44,7 +57,8 @@ Initial release.
 
 - macOS and Linux (including WSL). Native Windows is not supported because profile sharing relies on symlinks.
 
-[Unreleased]: https://github.com/husseinAbdElaziz/multi-claude/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/husseinAbdElaziz/multi-claude/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/husseinAbdElaziz/multi-claude/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/husseinAbdElaziz/multi-claude/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/husseinAbdElaziz/multi-claude/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/husseinAbdElaziz/multi-claude/releases/tag/v0.1.0
