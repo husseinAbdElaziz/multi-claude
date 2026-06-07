@@ -103,6 +103,11 @@ fn handleConnection(allocator: Allocator, io: Io, stream: *net.Stream, logger: L
         return;
     }
 
+    if (std.mem.eql(u8, path, "/api/fetch-models") and method == .GET) {
+        try handleFetchModels(allocator, io, &request, query);
+        return;
+    }
+
     if (std.mem.eql(u8, path, "/api/provider")) {
         const name = getQueryParam(query, "name");
         // Reject path-traversal / unexpected characters before the name ever
@@ -151,6 +156,27 @@ fn handleConnection(allocator: Allocator, io: Io, stream: *net.Stream, logger: L
     });
 }
 
+fn percentDecode(allocator: Allocator, s: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (i < s.len) {
+        if (s[i] == '%' and i + 2 < s.len) {
+            const hi = std.fmt.charToDigit(s[i + 1], 16) catch { try out.append(allocator, s[i]); i += 1; continue; };
+            const lo = std.fmt.charToDigit(s[i + 2], 16) catch { try out.append(allocator, s[i]); i += 1; continue; };
+            try out.append(allocator, (hi << 4) | lo);
+            i += 3;
+        } else if (s[i] == '+') {
+            try out.append(allocator, ' ');
+            i += 1;
+        } else {
+            try out.append(allocator, s[i]);
+            i += 1;
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 fn getQueryParam(query: []const u8, key: []const u8) ?[]const u8 {
     var it = std.mem.tokenizeScalar(u8, query, '&');
     while (it.next()) |param| {
@@ -165,6 +191,100 @@ fn jsonResponse(request: *std.http.Server.Request, body: []const u8) !void {
         .keep_alive = false,
         .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
     });
+}
+
+fn handleFetchModels(allocator: Allocator, io: Io, request: *std.http.Server.Request, query: []const u8) !void {
+    const raw_url = getQueryParam(query, "url") orelse {
+        return jsonResponse(request, "{\"error\":\"missing url\"}");
+    };
+    const raw_key = getQueryParam(query, "key");
+
+    const url = try percentDecode(allocator, raw_url);
+    defer allocator.free(url);
+    const key: ?[]u8 = if (raw_key) |k| try percentDecode(allocator, k) else null;
+    defer if (key) |k| allocator.free(k);
+
+    const base = std.mem.trimEnd(u8, url, "/");
+    const models_url = try std.fmt.allocPrint(allocator, "{s}/models", .{base});
+    defer allocator.free(models_url);
+
+    const uri = std.Uri.parse(models_url) catch {
+        return jsonResponse(request, "{\"error\":\"invalid url\"}");
+    };
+
+    var client: std.http.Client = .{ .allocator = allocator, .io = io };
+    defer client.deinit();
+
+    const auth: ?[]u8 = if (key) |k| (if (k.len > 0) try std.fmt.allocPrint(allocator, "Bearer {s}", .{k}) else null) else null;
+    defer if (auth) |a| allocator.free(a);
+
+    const hdrs: []const std.http.Header = if (auth) |a|
+        &[_]std.http.Header{.{ .name = "authorization", .value = a }}
+    else
+        &[_]std.http.Header{};
+
+    var get_req = client.request(.GET, uri, .{
+        .extra_headers = hdrs,
+        .keep_alive = false,
+        .headers = .{ .accept_encoding = .{ .override = "identity" } },
+    }) catch {
+        return jsonResponse(request, "{\"error\":\"connect failed\"}");
+    };
+    defer get_req.deinit();
+
+    get_req.sendBodiless() catch {
+        return jsonResponse(request, "{\"error\":\"request failed\"}");
+    };
+
+    var redir_buf: [4096]u8 = undefined;
+    var response = get_req.receiveHead(&redir_buf) catch {
+        return jsonResponse(request, "{\"error\":\"no response\"}");
+    };
+
+    if (response.head.status != .ok) {
+        const msg = try std.fmt.allocPrint(allocator, "{{\"error\":\"provider returned {d}\"}}", .{@intFromEnum(response.head.status)});
+        defer allocator.free(msg);
+        return jsonResponse(request, msg);
+    }
+
+    var resp_out: Io.Writer.Allocating = .init(allocator);
+    defer resp_out.deinit();
+    var rdr_buf: [4096]u8 = undefined;
+    var rdr = response.reader(&rdr_buf);
+    _ = rdr.streamRemaining(&resp_out.writer) catch 0;
+    const resp_body = try resp_out.toOwnedSlice();
+    defer allocator.free(resp_body);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, resp_body, .{}) catch {
+        return jsonResponse(request, "{\"error\":\"invalid provider response\"}");
+    };
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return jsonResponse(request, "{\"error\":\"unexpected response format\"}");
+    const data_v = parsed.value.object.get("data") orelse return jsonResponse(request, "{\"error\":\"no models data in response\"}");
+    if (data_v != .array) return jsonResponse(request, "{\"error\":\"invalid models data\"}");
+
+    var out: Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try out.writer.writeByte('[');
+    var first = true;
+    for (data_v.array.items) |item| {
+        if (item != .object) continue;
+        const id_v = item.object.get("id") orelse continue;
+        if (id_v != .string) continue;
+        if (!first) try out.writer.writeByte(',');
+        first = false;
+        try out.writer.writeByte('"');
+        for (id_v.string) |c| {
+            if (c == '"' or c == '\\') try out.writer.writeByte('\\');
+            try out.writer.writeByte(c);
+        }
+        try out.writer.writeByte('"');
+    }
+    try out.writer.writeByte(']');
+    const json = try out.toOwnedSlice();
+    defer allocator.free(json);
+    return jsonResponse(request, json);
 }
 
 fn handleGetProfiles(allocator: Allocator, request: *std.http.Server.Request) !void {

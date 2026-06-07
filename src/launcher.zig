@@ -103,17 +103,21 @@ pub fn runProfile(allocator: Allocator, logger: Log, profile_name: []const u8, e
                 model_arg = m;
             }
 
-            if (pp.openai_compat) {
-                // Always re-synthesize providers.json from provider.json so URL/model changes
-                // take effect immediately. startProxyIfNeeded will find it.
-                var models_list = std.ArrayList([]u8).empty;
-                defer models_list.deinit(allocator);
-                if (model_arg) |m| try models_list.append(allocator, m);
-                const owned_models = try models_list.toOwnedSlice(allocator);
+            if (pp.api_url) |url| {
+                // Route through proxy for both compat types. This keeps ANTHROPIC_API_KEY
+                // out of Claude's env (avoids "Detected a custom API key" prompt) and
+                // handles Anthropic→OpenAI translation for openai_compat endpoints.
+                // Always re-synthesize providers.json so URL/model/key changes take effect immediately.
+                const ptype: providers_mod.ProviderType = if (pp.openai_compat) .openai_compat else .anthropic_compat;
+                // Dupe model string into cfg so cfg.deinit owns it independently of model_arg.
+                // Wildcard "*" when no model set so proxy can match any non-claude model sent by Claude Code.
+                const model_str = if (model_arg) |m| try allocator.dupe(u8, m) else try allocator.dupe(u8, "*");
+                var models_buf = [1][]u8{model_str};
+                const owned_models = try allocator.dupe([]u8, &models_buf);
                 const entry = providers_mod.ProviderEntry{
                     .name = try allocator.dupe(u8, "provider"),
-                    .provider_type = .openai_compat,
-                    .api_url = try allocator.dupe(u8, pp.api_url orelse ""),
+                    .provider_type = ptype,
+                    .api_url = try allocator.dupe(u8, url),
                     .api_key = if (pp.api_key) |k| try allocator.dupe(u8, k) else null,
                     .models = owned_models,
                 };
@@ -121,13 +125,8 @@ pub fn runProfile(allocator: Allocator, logger: Log, profile_name: []const u8, e
                 entries[0] = entry;
                 var cfg = providers_mod.Config{ .entries = entries };
                 try providers_mod.save(allocator, profile_name, cfg);
-                cfg.entries[0].models = &.{}; // model_arg owns the strings, prevent double-free
                 cfg.deinit(allocator);
-                logger.info("configured openai_compat provider proxy", .{});
-            } else {
-                // anthropic_compat: pass through directly, no translation needed.
-                if (pp.api_url) |url| try env_map.put("ANTHROPIC_BASE_URL", url);
-                if (pp.api_key) |key| try env_map.put("ANTHROPIC_API_KEY", key);
+                logger.info("configured {s} provider proxy", .{@tagName(ptype)});
             }
         }
     }

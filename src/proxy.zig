@@ -195,13 +195,11 @@ fn fetchProviderModelsInner(allocator: Allocator, io: Io, api_url: []const u8, a
     var upstream = try client.request(.GET, uri, .{
         .extra_headers = hdrs,
         .keep_alive = false,
+        .headers = .{ .accept_encoding = .{ .override = "identity" } },
     });
     defer upstream.deinit();
 
-    upstream.transfer_encoding = .{ .content_length = 0 };
-    var bw = try upstream.sendBodyUnflushed(&.{});
-    bw.end() catch {};
-    if (upstream.connection) |conn| conn.flush() catch {};
+    try upstream.sendBodiless();
 
     var redir_buf: [4096]u8 = undefined;
     var response = try upstream.receiveHead(&redir_buf);
