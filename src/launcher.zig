@@ -215,7 +215,15 @@ fn startProxyIfNeeded(
     defer allocator.free(proxy_url);
 
     try env_map.put("ANTHROPIC_BASE_URL", proxy_url);
-    try env_map.put("ANTHROPIC_API_KEY", secret);
+    // Gate the proxy with a secret in a CUSTOM header, not the auth header, so
+    // Claude Code's own Anthropic credential (OAuth token or API key) still
+    // flows through untouched — needed to pass claude-* requests upstream.
+    // Dropping any inherited ANTHROPIC_API_KEY makes Claude use its own stored
+    // login and avoids the "Detected a custom API key" prompt.
+    _ = env_map.swapRemove("ANTHROPIC_API_KEY");
+    const custom_hdr = try std.fmt.allocPrint(allocator, "X-Mcc-Proxy-Secret: {s}", .{secret});
+    defer allocator.free(custom_hdr);
+    try env_map.put("ANTHROPIC_CUSTOM_HEADERS", custom_hdr);
     return port;
 }
 

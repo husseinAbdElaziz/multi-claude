@@ -43,21 +43,18 @@ pub fn run(
     }
 }
 
-/// Constant-time-ish equality for the shared secret. The secret is injected by
-/// the launcher as ANTHROPIC_API_KEY, so Claude Code sends it back as `x-api-key`
-/// (or `authorization: Bearer <secret>`). Any request without it is rejected —
-/// this stops other local processes / browser pages from spending the user's key.
+/// Header carrying the per-run gate secret. Kept separate from the auth header
+/// so Claude Code's real Anthropic credential passes through untouched.
+const SECRET_HEADER = "x-mcc-proxy-secret";
+
+/// Authorize a request by the gate secret in `SECRET_HEADER`. Injected by the
+/// launcher via ANTHROPIC_CUSTOM_HEADERS, so every Claude Code request carries
+/// it; anything else (other local processes, browser pages) is rejected.
 fn requestAuthorized(req: *std.http.Server.Request, secret: []const u8) bool {
     if (secret.len == 0) return true; // not configured (e.g. manual run) → no gate
     var it = req.iterateHeaders();
     while (it.next()) |h| {
-        const v = if (std.ascii.eqlIgnoreCase(h.name, "x-api-key"))
-            h.value
-        else if (std.ascii.eqlIgnoreCase(h.name, "authorization"))
-            (if (std.mem.startsWith(u8, h.value, "Bearer ")) h.value["Bearer ".len..] else h.value)
-        else
-            continue;
-        if (constEql(v, secret)) return true;
+        if (std.ascii.eqlIgnoreCase(h.name, SECRET_HEADER) and constEql(h.value, secret)) return true;
     }
     return false;
 }
@@ -107,7 +104,7 @@ fn handleConn(
     if (method == .POST and (std.mem.eql(u8, path, "/v1/messages") or
         std.mem.eql(u8, path, "/v1/messages/count_tokens")))
     {
-        try handleMessages(allocator, io, &req, path, providers_cfg, anthropic_api_key, proxy_secret);
+        try handleMessages(allocator, io, &req, path, providers_cfg, anthropic_api_key);
         return;
     }
 
@@ -246,7 +243,6 @@ fn handleMessages(
     path: []const u8,
     cfg: ?providers_mod.Config,
     anthropic_api_key: []const u8,
-    proxy_secret: []const u8,
 ) !void {
     // Collect headers BEFORE reading body — iterateHeaders asserts received_head state.
     // Gather all client headers; auth is replaced, low-level transport headers are dropped.
@@ -260,18 +256,14 @@ fn handleMessages(
             if (std.ascii.eqlIgnoreCase(h.name, "authorization") or
                 std.ascii.eqlIgnoreCase(h.name, "x-api-key"))
             {
-                // Treat the injected secret as "ours" (drop it); anything else is a
-                // real client credential to pass through (OAuth bearer, etc.).
-                const bare = if (std.mem.startsWith(u8, h.value, "Bearer "))
-                    h.value["Bearer ".len..]
-                else
-                    h.value;
-                if (!constEql(bare, proxy_secret)) {
-                    client_auth_hdr = h.value;
-                    client_auth_name = h.name;
-                }
+                // The client's real Anthropic credential — capture for claude-*
+                // passthrough (used when no provider key overrides it).
+                client_auth_hdr = h.value;
+                client_auth_name = h.name;
                 continue; // auth handled separately
             }
+            // Never forward the internal gate header upstream.
+            if (std.ascii.eqlIgnoreCase(h.name, SECRET_HEADER)) continue;
             // Drop transport-level headers; keep everything else (anthropic-version, anthropic-beta, etc.)
             if (std.ascii.eqlIgnoreCase(h.name, "host") or
                 std.ascii.eqlIgnoreCase(h.name, "content-length") or
