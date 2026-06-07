@@ -38,6 +38,22 @@ pub fn extractTag(body: []const u8) ?[]const u8 {
     return body[start..i];
 }
 
+/// Compare two dotted version strings (e.g. "0.5.1") numerically, segment by
+/// segment. Returns true only when `latest` is strictly greater than `current`,
+/// so a stale GitHub "latest" release can never trigger a downgrade prompt.
+pub fn isNewer(latest: []const u8, current: []const u8) bool {
+    var lit = std.mem.splitScalar(u8, latest, '.');
+    var cit = std.mem.splitScalar(u8, current, '.');
+    while (true) {
+        const ls = lit.next();
+        const cs = cit.next();
+        if (ls == null and cs == null) return false;
+        const lv = std.fmt.parseInt(u32, ls orelse "0", 10) catch 0;
+        const cv = std.fmt.parseInt(u32, cs orelse "0", 10) catch 0;
+        if (lv != cv) return lv > cv;
+    }
+}
+
 /// Query GitHub for the latest release version (without a leading "v").
 /// Returns null if it can't be determined (offline, rate-limited, etc.).
 fn fetchLatestVersion(allocator: Allocator, io: Io, env_map: *const std.process.Environ.Map) ?[]u8 {
@@ -131,7 +147,7 @@ pub fn notifyIfOutdated(allocator: Allocator, logger: Log, init: Init) void {
     }
 
     const l = latest orelse return;
-    if (l.len == 0 or std.mem.eql(u8, l, build_options.version)) return;
+    if (l.len == 0 or !isNewer(l, build_options.version)) return;
 
     // Only prompt on an interactive terminal; piped/CI launches must not block
     // on stdin. There we just print the notice and carry on.
@@ -186,8 +202,8 @@ pub fn run(allocator: Allocator, logger: Log, init: Init, force: bool) !void {
     defer if (latest) |l| allocator.free(l);
 
     if (latest) |l| {
-        if (!force and std.mem.eql(u8, l, build_options.version)) {
-            logger.info("mcc is already up to date (v{s})", .{l});
+        if (!force and !isNewer(l, build_options.version)) {
+            logger.info("mcc is already up to date (v{s})", .{build_options.version});
             return;
         }
         logger.info("Updating mcc v{s} -> v{s}...", .{ build_options.version, l });

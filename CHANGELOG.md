@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-06-07
+
+### Fixed
+
+- Update check no longer prompts a downgrade. The launcher compared the running version against GitHub's `releases/latest` for inequality only, so a stale or lagging remote release (e.g. local `v0.5.1`, remote `v0.5.0`) triggered an `Update mcc v0.5.1 -> v0.5.0` prompt. Versions are now compared numerically segment by segment; the prompt and `mcc update` only proceed when the remote is strictly newer (`mcc update --force` still reinstalls).
+
 ## [0.5.1] - 2026-06-07
 
 ### Fixed
