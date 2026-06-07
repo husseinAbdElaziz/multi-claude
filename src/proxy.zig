@@ -299,14 +299,24 @@ fn handleMessages(
         try forwardToAnthropic(allocator, io, req, path, body, anthropic_api_key, client_auth_hdr, client_auth_name, passthrough_headers.items, model, is_streaming);
     } else {
         const p = provider.?;
+        // Claude Code may prepend routing prefixes (e.g. "anthropic/lmstudio/")
+        // to the model id. Rewrite the body to the configured bare id before
+        // forwarding; keep the original `model` for response echo so Claude Code
+        // sees back the id it asked for.
+        const upstream_model = p.resolveModel(model);
+        const fwd_body: []const u8 = if (!std.mem.eql(u8, upstream_model, model))
+            bodyWithModel(allocator, body, upstream_model) catch body
+        else
+            body;
+        defer if (fwd_body.ptr != body.ptr) allocator.free(fwd_body);
         switch (p.provider_type) {
             .anthropic_compat => {
                 const key = p.api_key orelse anthropic_api_key;
-                try forwardToAnthropicCompat(allocator, io, req, p.api_url, body, key, model, is_streaming);
+                try forwardToAnthropicCompat(allocator, io, req, p.api_url, fwd_body, key, model, is_streaming);
             },
             .openai_compat => {
                 const key = p.api_key orelse "";
-                try forwardToOpenAICompat(allocator, io, req, p.api_url, body, key, model, is_streaming);
+                try forwardToOpenAICompat(allocator, io, req, p.api_url, fwd_body, key, model, is_streaming);
             },
         }
     }
@@ -558,6 +568,15 @@ fn forwardPassthrough(
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Re-emit an Anthropic request body with the `model` field replaced.
+pub fn bodyWithModel(allocator: Allocator, body: []const u8, new_model: []const u8) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidRequest;
+    try parsed.value.object.put(parsed.arena.allocator(), "model", .{ .string = new_model });
+    return std.json.Stringify.valueAlloc(allocator, parsed.value, .{});
+}
 
 fn extractModel(allocator: Allocator, body: []const u8) ![]const u8 {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});

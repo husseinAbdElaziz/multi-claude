@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-06-07
+
+### Fixed
+
+- Custom models with a provider-routing prefix now work. Claude Code prepends segments to the model id (e.g. `anthropic/lmstudio/cyankiwi/Qwen3.6-27B-AWQ-INT4`); the proxy now matches the configured id as a suffix at a `/` boundary and rewrites the outbound request to the bare id, so the provider no longer returns `404 model does not exist`. Exact ids, globs, and `*` wildcards are unchanged.
+- `mcc` (the default profile) now honors a globally-configured provider (`~/.multi-claude/provider.json`): it routes through the proxy and forces the configured model via `--model`, the same as a named profile — no profile creation required. With no provider configured it still launches `claude` directly.
+
 ## [0.5.0] - 2026-06-07
 
 ### Added

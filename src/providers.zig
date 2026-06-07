@@ -32,10 +32,75 @@ pub const ProviderEntry = struct {
             if (m.len > 0 and m[m.len - 1] == '*') {
                 if (std.mem.startsWith(u8, model, m[0 .. m.len - 1])) return true;
             }
+            // provider-prefixed id: Claude Code may prepend routing segments,
+            // e.g. "anthropic/lmstudio/<configured>". Match the bare suffix
+            // at a '/' boundary.
+            if (m.len < model.len and std.mem.endsWith(u8, model, m) and
+                model[model.len - m.len - 1] == '/') return true;
         }
         return false;
     }
+
+    /// Model id to send upstream. Strips provider-routing prefixes Claude Code
+    /// may prepend (e.g. "anthropic/lmstudio/<model>") down to the configured
+    /// id. Returns `requested` unchanged for exact matches, globs, and "*".
+    pub fn resolveModel(self: *const ProviderEntry, requested: []const u8) []const u8 {
+        for (self.models) |m| {
+            if (std.mem.eql(u8, m, "*")) continue; // wildcard: pass through
+            if (std.mem.eql(u8, m, requested)) return requested; // exact
+            if (m.len > 0 and m[m.len - 1] == '*') { // glob: pass through
+                if (std.mem.startsWith(u8, requested, m[0 .. m.len - 1])) return requested;
+            }
+            if (m.len < requested.len and std.mem.endsWith(u8, requested, m) and
+                requested[requested.len - m.len - 1] == '/') return m; // strip prefix
+        }
+        return requested;
+    }
 };
+
+test "matchesModel: exact, wildcard, glob, prefix-boundary, non-match" {
+    const t = std.testing;
+    var exact = [_][]u8{@constCast("cyankiwi/Qwen3.6-27B-AWQ-INT4")};
+    const pe = ProviderEntry{
+        .name = @constCast("p"),
+        .provider_type = .openai_compat,
+        .api_url = @constCast("http://x/v1"),
+        .api_key = null,
+        .models = &exact,
+    };
+    try t.expect(pe.matchesModel("cyankiwi/Qwen3.6-27B-AWQ-INT4"));
+    try t.expect(pe.matchesModel("anthropic/lmstudio/cyankiwi/Qwen3.6-27B-AWQ-INT4"));
+    try t.expect(!pe.matchesModel("claude-sonnet-4-6"));
+
+    var star = [_][]u8{@constCast("*")};
+    const pw = ProviderEntry{ .name = @constCast("w"), .provider_type = .openai_compat, .api_url = @constCast("u"), .api_key = null, .models = &star };
+    try t.expect(pw.matchesModel("anything"));
+
+    var glob = [_][]u8{@constCast("llama*")};
+    const pg = ProviderEntry{ .name = @constCast("g"), .provider_type = .openai_compat, .api_url = @constCast("u"), .api_key = null, .models = &glob };
+    try t.expect(pg.matchesModel("llama3.2:latest"));
+
+    // substring without a '/' boundary must NOT match
+    var bar = [_][]u8{@constCast("bar")};
+    const pb = ProviderEntry{ .name = @constCast("b"), .provider_type = .openai_compat, .api_url = @constCast("u"), .api_key = null, .models = &bar };
+    try t.expect(!pb.matchesModel("foobar"));
+}
+
+test "resolveModel: strips prefix, preserves exact/glob/wildcard" {
+    const t = std.testing;
+    var exact = [_][]u8{@constCast("cyankiwi/Qwen3.6-27B-AWQ-INT4")};
+    const pe = ProviderEntry{ .name = @constCast("p"), .provider_type = .openai_compat, .api_url = @constCast("u"), .api_key = null, .models = &exact };
+    try t.expectEqualStrings("cyankiwi/Qwen3.6-27B-AWQ-INT4", pe.resolveModel("anthropic/lmstudio/cyankiwi/Qwen3.6-27B-AWQ-INT4"));
+    try t.expectEqualStrings("cyankiwi/Qwen3.6-27B-AWQ-INT4", pe.resolveModel("cyankiwi/Qwen3.6-27B-AWQ-INT4"));
+
+    var star = [_][]u8{@constCast("*")};
+    const pw = ProviderEntry{ .name = @constCast("w"), .provider_type = .openai_compat, .api_url = @constCast("u"), .api_key = null, .models = &star };
+    try t.expectEqualStrings("anthropic/foo", pw.resolveModel("anthropic/foo"));
+
+    var glob = [_][]u8{@constCast("llama*")};
+    const pg = ProviderEntry{ .name = @constCast("g"), .provider_type = .openai_compat, .api_url = @constCast("u"), .api_key = null, .models = &glob };
+    try t.expectEqualStrings("llama3.2:latest", pg.resolveModel("llama3.2:latest"));
+}
 
 pub const Config = struct {
     entries: []ProviderEntry,

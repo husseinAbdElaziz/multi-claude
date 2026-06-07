@@ -15,6 +15,8 @@ pub const update = @import("update.zig");
 pub const uninstall = @import("uninstall.zig");
 pub const web = @import("web.zig");
 pub const proxy = @import("proxy.zig");
+pub const providers = @import("providers.zig");
+pub const translator = @import("translator.zig");
 
 /// Calculate simple Levenshtein distance between two strings
 pub fn levenshtein(a: []const u8, b: []const u8) usize {
