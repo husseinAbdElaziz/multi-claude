@@ -95,6 +95,16 @@ pub fn atomicWrite(allocator: Allocator, full_path: []const u8, content: []const
 
     try Io.File.writeStreamingAll(file, io, content);
 
+    // 0600: config files may hold provider API keys — keep them owner-only.
+    // Applied to the temp file so the final path inherits it through rename
+    // (no window where the secret sits world-readable).
+    if (builtin.os.tag != .windows and tmp_path.len < 4096) {
+        var pbuf: [4096:0]u8 = undefined;
+        @memcpy(pbuf[0..tmp_path.len], tmp_path);
+        pbuf[tmp_path.len] = 0;
+        _ = std.c.chmod(&pbuf, 0o600);
+    }
+
     Io.Dir.renameAbsolute(tmp_path, full_path, io) catch |err| {
         remove(tmp_path) catch {};
         return err;

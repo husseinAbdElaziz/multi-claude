@@ -184,9 +184,16 @@ fn startProxyIfNeeded(
 
     logger.info("starting provider proxy on port {d}", .{port});
 
+    // Random per-run secret: injected as Claude Code's ANTHROPIC_API_KEY and
+    // required by the proxy on every request, so no other local process or
+    // browser page can drive the proxy with the user's real key.
+    const secret = try proxy_mod.generateSecret(allocator, io);
+    defer allocator.free(secret);
+
     // Proxy inherits original environ so it has the real ANTHROPIC_API_KEY.
     var proxy_env = try std.process.Environ.createMap(init.environ, allocator);
     defer proxy_env.deinit();
+    try proxy_env.put("MCC_PROXY_SECRET", secret);
 
     var exe_io = Io.Threaded.init(allocator, .{ .environ = init.environ });
     defer exe_io.deinit();
@@ -206,11 +213,9 @@ fn startProxyIfNeeded(
 
     const proxy_url = try std.fmt.allocPrint(allocator, "http://localhost:{d}", .{port});
     defer allocator.free(proxy_url);
-    const token = try proxy_mod.internalToken(allocator, port);
-    defer allocator.free(token);
 
     try env_map.put("ANTHROPIC_BASE_URL", proxy_url);
-    try env_map.put("ANTHROPIC_API_KEY", token);
+    try env_map.put("ANTHROPIC_API_KEY", secret);
     return port;
 }
 

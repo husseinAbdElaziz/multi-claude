@@ -12,7 +12,6 @@ const config = @import("config.zig");
 
 const ANTHROPIC_API_BASE = "https://api.anthropic.com";
 const ANTHROPIC_VERSION = "2023-06-01";
-const INTERNAL_TOKEN_PREFIX = "mcc-proxy-internal-";
 
 pub fn run(
     allocator: Allocator,
@@ -21,6 +20,7 @@ pub fn run(
     profile_name: []const u8,
     port: u16,
     anthropic_api_key: []const u8,
+    proxy_secret: []const u8,
 ) !void {
     var providers_cfg = providers_mod.load(allocator, profile_name) catch null;
     defer if (providers_cfg) |*c| c.deinit(allocator);
@@ -37,10 +37,36 @@ pub fn run(
             continue;
         };
         defer stream.close(io);
-        handleConn(allocator, io, &stream, providers_cfg, anthropic_api_key, logger) catch |err| {
+        handleConn(allocator, io, &stream, providers_cfg, anthropic_api_key, proxy_secret, logger) catch |err| {
             logger.warn("proxy conn: {}", .{err});
         };
     }
+}
+
+/// Constant-time-ish equality for the shared secret. The secret is injected by
+/// the launcher as ANTHROPIC_API_KEY, so Claude Code sends it back as `x-api-key`
+/// (or `authorization: Bearer <secret>`). Any request without it is rejected —
+/// this stops other local processes / browser pages from spending the user's key.
+fn requestAuthorized(req: *std.http.Server.Request, secret: []const u8) bool {
+    if (secret.len == 0) return true; // not configured (e.g. manual run) → no gate
+    var it = req.iterateHeaders();
+    while (it.next()) |h| {
+        const v = if (std.ascii.eqlIgnoreCase(h.name, "x-api-key"))
+            h.value
+        else if (std.ascii.eqlIgnoreCase(h.name, "authorization"))
+            (if (std.mem.startsWith(u8, h.value, "Bearer ")) h.value["Bearer ".len..] else h.value)
+        else
+            continue;
+        if (constEql(v, secret)) return true;
+    }
+    return false;
+}
+
+fn constEql(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    var diff: u8 = 0;
+    for (a, b) |x, y| diff |= x ^ y;
+    return diff == 0;
 }
 
 fn handleConn(
@@ -49,6 +75,7 @@ fn handleConn(
     stream: *net.Stream,
     providers_cfg: ?providers_mod.Config,
     anthropic_api_key: []const u8,
+    proxy_secret: []const u8,
     logger: Log,
 ) !void {
     _ = logger;
@@ -64,15 +91,11 @@ fn handleConn(
     const path_end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
     const path = target[0..path_end];
 
-    if (method == .OPTIONS) {
-        try req.respond("", .{
-            .keep_alive = false,
-            .extra_headers = &.{
-                .{ .name = "access-control-allow-origin", .value = "*" },
-                .{ .name = "access-control-allow-methods", .value = "GET, POST, OPTIONS" },
-                .{ .name = "access-control-allow-headers", .value = "content-type, authorization, x-api-key, anthropic-version" },
-            },
-        });
+    // Authenticate every request against the per-run secret. No CORS: this proxy
+    // serves Claude Code only, never a browser, so cross-origin access is denied
+    // by simply not emitting Access-Control-Allow-Origin.
+    if (!requestAuthorized(&req, proxy_secret)) {
+        try req.respond("{\"error\":\"unauthorized\"}", .{ .status = .unauthorized, .keep_alive = false });
         return;
     }
 
@@ -84,7 +107,7 @@ fn handleConn(
     if (method == .POST and (std.mem.eql(u8, path, "/v1/messages") or
         std.mem.eql(u8, path, "/v1/messages/count_tokens")))
     {
-        try handleMessages(allocator, io, &req, path, providers_cfg, anthropic_api_key);
+        try handleMessages(allocator, io, &req, path, providers_cfg, anthropic_api_key, proxy_secret);
         return;
     }
 
@@ -223,6 +246,7 @@ fn handleMessages(
     path: []const u8,
     cfg: ?providers_mod.Config,
     anthropic_api_key: []const u8,
+    proxy_secret: []const u8,
 ) !void {
     // Collect headers BEFORE reading body — iterateHeaders asserts received_head state.
     // Gather all client headers; auth is replaced, low-level transport headers are dropped.
@@ -236,7 +260,13 @@ fn handleMessages(
             if (std.ascii.eqlIgnoreCase(h.name, "authorization") or
                 std.ascii.eqlIgnoreCase(h.name, "x-api-key"))
             {
-                if (!std.mem.startsWith(u8, h.value, INTERNAL_TOKEN_PREFIX)) {
+                // Treat the injected secret as "ours" (drop it); anything else is a
+                // real client credential to pass through (OAuth bearer, etc.).
+                const bare = if (std.mem.startsWith(u8, h.value, "Bearer "))
+                    h.value["Bearer ".len..]
+                else
+                    h.value;
+                if (!constEql(bare, proxy_secret)) {
                     client_auth_hdr = h.value;
                     client_auth_name = h.name;
                 }
@@ -565,7 +595,11 @@ pub fn findFreePort(io: Io) !u16 {
     return error.NoFreePort;
 }
 
-/// Generate the internal token used between Claude Code and the proxy.
-pub fn internalToken(allocator: Allocator, port: u16) ![]u8 {
-    return std.fmt.allocPrint(allocator, "{s}{d}", .{ INTERNAL_TOKEN_PREFIX, port });
+/// Generate a random per-run secret shared between the launcher (which injects
+/// it as Claude Code's ANTHROPIC_API_KEY) and the proxy (which requires it on
+/// every request). Unpredictable — unlike the old port-derived token.
+pub fn generateSecret(allocator: Allocator, io: Io) ![]u8 {
+    var raw: [24]u8 = undefined;
+    try io.randomSecure(&raw);
+    return std.fmt.allocPrint(allocator, "mcc-proxy-{x}", .{&raw});
 }

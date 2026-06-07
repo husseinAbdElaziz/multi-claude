@@ -178,10 +178,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
             }
             const api_key = config.getEnvVar(gpa, "ANTHROPIC_API_KEY") catch null orelse try gpa.dupe(u8, "");
             defer gpa.free(api_key);
+            const proxy_secret = config.getEnvVar(gpa, "MCC_PROXY_SECRET") catch null orelse try gpa.dupe(u8, "");
+            defer gpa.free(proxy_secret);
 
             var threaded = std.Io.Threaded.init(gpa, .{ .environ = init.environ });
             defer threaded.deinit();
-            try proxy.run(gpa, logger, threaded.io(), pname, port, api_key);
+            try proxy.run(gpa, logger, threaded.io(), pname, port, api_key, proxy_secret);
         },
         .help => {
             printUsage();

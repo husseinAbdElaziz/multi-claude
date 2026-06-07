@@ -359,7 +359,7 @@ function renderSidebar() {
     item.dataset.name = p.name;
     item.onclick = () => selectProfile(p.name);
     item.innerHTML = `
-      <span class="dot ${p.hasProvider ? 'configured' : ''}" id="dot-${p.name}"></span>
+      <span class="dot ${p.hasProvider ? 'configured' : ''}" id="dot-${esc(p.name)}"></span>
       <span class="name">${esc(p.name)}</span>
     `;
     list.appendChild(item);
@@ -518,7 +518,7 @@ function showStatus(type, msg) {
 }
 
 function esc(s) {
-  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // Check if default provider is configured
