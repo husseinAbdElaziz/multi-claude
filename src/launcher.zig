@@ -7,6 +7,7 @@ const lock = @import("lock.zig");
 const provider_mod = @import("provider.zig");
 const providers_mod = @import("providers.zig");
 const proxy_mod = @import("proxy.zig");
+const update = @import("update.zig");
 const fsx = @import("fsx.zig");
 const Log = @import("log.zig").Log;
 
@@ -25,7 +26,7 @@ fn spawnIo(allocator: Allocator, init: Init) Io.Threaded {
 
 /// Run the default profile (equivalent to running `claude` directly)
 pub fn runDefault(allocator: Allocator, logger: Log, init: Init) !void {
-    _ = logger;
+    update.notifyIfOutdated(allocator, logger, init);
 
     var threaded = spawnIo(allocator, init);
     defer threaded.deinit();
@@ -44,6 +45,8 @@ pub fn runDefault(allocator: Allocator, logger: Log, init: Init) !void {
 
 /// Run a specific profile
 pub fn runProfile(allocator: Allocator, logger: Log, profile_name: []const u8, extra_args: []const []const u8, init: Init) !void {
+    update.notifyIfOutdated(allocator, logger, init);
+
     var threaded = spawnIo(allocator, init);
     defer threaded.deinit();
     const io = threaded.io();
