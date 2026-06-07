@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-06-07
+
+### Added
+
+- Provider config UI now has an **API Format** dropdown (OpenAI-compatible vs Anthropic-compatible), so the endpoint's protocol is chosen explicitly instead of always defaulting to Anthropic. New providers default to OpenAI-compatible (Ollama, LM Studio, OpenAI, OpenRouter, vLLM).
+- Provider config UI now has a **model dropdown** with a **Fetch Models** button that queries the provider's `/models` endpoint (`GET /api/fetch-models`) and lists available models. Selecting a model is now required before saving when an API URL is set.
+
+### Fixed
+
+- Custom (non-`claude-*`) models now route correctly: the launcher routes both `openai_compat` and `anthropic_compat` providers through the local proxy, so requests reach the configured endpoint instead of falling back to Anthropic.
+- `anthropic_compat` providers no longer trigger Claude Code's "Detected a custom API key" prompt — routing through the proxy keeps `ANTHROPIC_API_KEY` out of Claude Code's environment.
+- Model fetch (UI and proxy auto-discovery) no longer panics on `GET /models`: send a bodiless request instead of a zero-length body (which tripped a `requestHasBody()` assertion), and request `identity` encoding so responses aren't gzipped.
+
 ## [0.4.0] - 2026-06-07
 
 ### Added
