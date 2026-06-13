@@ -40,44 +40,36 @@ pub fn mccConfigPath(allocator: Allocator) ![]u8 {
     return std.fmt.allocPrint(allocator, "{s}/.multi-claude/config.zon", .{home});
 }
 
-/// Returns the path to ~/.multi-claude/profiles/<name>
-pub fn profileDir(allocator: Allocator, profile_name: []const u8) ![]u8 {
+/// Build "<home>/.multi-claude/profiles/<name><suffix>". `suffix` is "" for the
+/// profile root, or "/config", "/manifest.zon", etc. for a file/subdir within it.
+fn profileSubpath(allocator: Allocator, profile_name: []const u8, suffix: []const u8) ![]u8 {
     const home = try homeDir(allocator);
     defer allocator.free(home);
-    return std.fmt.allocPrint(allocator, "{s}/.multi-claude/profiles/{s}", .{
+    return std.fmt.allocPrint(allocator, "{s}/.multi-claude/profiles/{s}{s}", .{
         home,
         profile_name,
+        suffix,
     });
+}
+
+/// Returns the path to ~/.multi-claude/profiles/<name>
+pub fn profileDir(allocator: Allocator, profile_name: []const u8) ![]u8 {
+    return profileSubpath(allocator, profile_name, "");
 }
 
 /// Returns the composed CLAUDE_CONFIG_DIR for a profile
 pub fn profileConfigDir(allocator: Allocator, profile_name: []const u8) ![]u8 {
-    const home = try homeDir(allocator);
-    defer allocator.free(home);
-    return std.fmt.allocPrint(allocator, "{s}/.multi-claude/profiles/{s}/config", .{
-        home,
-        profile_name,
-    });
+    return profileSubpath(allocator, profile_name, "/config");
 }
 
 /// Returns the path to a profile's manifest
 pub fn profileManifestPath(allocator: Allocator, profile_name: []const u8) ![]u8 {
-    const home = try homeDir(allocator);
-    defer allocator.free(home);
-    return std.fmt.allocPrint(allocator, "{s}/.multi-claude/profiles/{s}/manifest.zon", .{
-        home,
-        profile_name,
-    });
+    return profileSubpath(allocator, profile_name, "/manifest.zon");
 }
 
 /// Returns the path to a profile's lock file
 pub fn profileLockPath(allocator: Allocator, profile_name: []const u8) ![]u8 {
-    const home = try homeDir(allocator);
-    defer allocator.free(home);
-    return std.fmt.allocPrint(allocator, "{s}/.multi-claude/profiles/{s}/run.lock", .{
-        home,
-        profile_name,
-    });
+    return profileSubpath(allocator, profile_name, "/run.lock");
 }
 
 /// Helper to get an optional env var

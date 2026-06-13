@@ -1,11 +1,11 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const config = @import("config.zig");
-const fsx = @import("fsx.zig");
+const config = @import("../shared/config.zig");
+const fsx = @import("../shared/fsx.zig");
 const manifest = @import("manifest.zig");
 const composer = @import("composer.zig");
-const Log = @import("log.zig").Log;
+const Log = @import("../shared/log.zig").Log;
 
 /// Validate a profile name. Only allows characters that are safe inside a
 /// single path component, preventing path traversal (e.g. "../../etc") and
@@ -99,26 +99,25 @@ pub fn list(allocator: Allocator, logger: Log) !void {
         return;
     }
 
-    const io = Io.Threaded.global_single_threaded.io();
-    const dir = Io.Dir.openDirAbsolute(io, profiles_dir, .{ .iterate = true }) catch return;
-    defer Io.Dir.close(dir, io);
+    const names = try fsx.listSubdirs(allocator, profiles_dir);
+    defer {
+        for (names) |n| allocator.free(n);
+        allocator.free(names);
+    }
 
-    var it = Io.Dir.iterate(dir);
-    while (it.next(io) catch |err| return err) |entry| {
-        if (entry.kind == .directory) {
-            const manifest_path = try std.fmt.allocPrint(
-                allocator,
-                "{s}/{s}/manifest.zon",
-                .{profiles_dir, entry.name},
-            );
-            defer allocator.free(manifest_path);
+    for (names) |name| {
+        const manifest_path = try std.fmt.allocPrint(
+            allocator,
+            "{s}/{s}/manifest.zon",
+            .{ profiles_dir, name },
+        );
+        defer allocator.free(manifest_path);
 
-            if (fsx.exists(manifest_path)) {
-                const m = manifest.Manifest.load(allocator, entry.name) catch continue;
-                defer allocator.free(m.name);
-                const mode = if (m.shared) "shared" else "isolated";
-                logger.info("  {s}  ({s})", .{ entry.name, mode });
-            }
+        if (fsx.exists(manifest_path)) {
+            const m = manifest.Manifest.load(allocator, name) catch continue;
+            defer allocator.free(m.name);
+            const mode = if (m.shared) "shared" else "isolated";
+            logger.info("  {s}  ({s})", .{ name, mode });
         }
     }
 }

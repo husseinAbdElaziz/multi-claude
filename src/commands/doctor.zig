@@ -1,9 +1,9 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const config = @import("config.zig");
-const fsx = @import("fsx.zig");
-const Log = @import("log.zig").Log;
+const config = @import("../shared/config.zig");
+const fsx = @import("../shared/fsx.zig");
+const Log = @import("../shared/log.zig").Log;
 
 /// Check the environment and report issues
 pub fn check(allocator: Allocator, logger: Log) !void {
@@ -53,23 +53,22 @@ pub fn check(allocator: Allocator, logger: Log) !void {
     defer allocator.free(profiles_dir);
 
     if (fsx.exists(profiles_dir)) {
-        const io = Io.Threaded.global_single_threaded.io();
-        const dir = Io.Dir.openDirAbsolute(io, profiles_dir, .{ .iterate = true }) catch return;
-        defer Io.Dir.close(dir, io);
+        const names = try fsx.listSubdirs(allocator, profiles_dir);
+        defer {
+            for (names) |n| allocator.free(n);
+            allocator.free(names);
+        }
 
         var broken_total: usize = 0;
-        var it = Io.Dir.iterate(dir);
-        while (it.next(io) catch return) |entry| {
-            if (entry.kind == .directory) {
-                const config_dir = try std.fmt.allocPrint(
-                    allocator,
-                    "{s}/{s}/config",
-                    .{profiles_dir, entry.name},
-                );
-                defer allocator.free(config_dir);
+        for (names) |name| {
+            const config_dir = try std.fmt.allocPrint(
+                allocator,
+                "{s}/{s}/config",
+                .{ profiles_dir, name },
+            );
+            defer allocator.free(config_dir);
 
-                broken_total += checkBrokenSymlinks(allocator, config_dir);
-            }
+            broken_total += checkBrokenSymlinks(allocator, config_dir);
         }
 
         if (broken_total == 0) {

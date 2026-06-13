@@ -1,7 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const fsx = @import("fsx.zig");
-const config = @import("config.zig");
+const cfgstore = @import("../shared/cfgstore.zig");
+
+const FILE = "providers.json";
 
 pub const ProviderType = enum {
     anthropic_compat, // speaks Anthropic Messages API (e.g. OpenRouter, any Anthropic-format proxy)
@@ -208,56 +209,22 @@ pub const Config = struct {
 };
 
 pub fn providersPath(allocator: Allocator, profile_name: ?[]const u8) ![]u8 {
-    const home = try config.homeDir(allocator);
-    defer allocator.free(home);
-    if (profile_name) |name| {
-        return std.fmt.allocPrint(allocator, "{s}/.multi-claude/profiles/{s}/providers.json", .{ home, name });
-    }
-    return std.fmt.allocPrint(allocator, "{s}/.multi-claude/providers.json", .{home});
+    return cfgstore.profilePath(allocator, profile_name, FILE);
 }
 
 /// Load providers config with fallback: profile-specific → global default → null.
 pub fn load(allocator: Allocator, profile_name: ?[]const u8) !?Config {
-    if (profile_name) |name| {
-        const path = try providersPath(allocator, name);
-        defer allocator.free(path);
-        if (fsx.exists(path)) {
-            const data = try fsx.readFile(allocator, path);
-            defer allocator.free(data);
-            return try Config.fromJson(allocator, data);
-        }
-    }
-    const global_path = try providersPath(allocator, null);
-    defer allocator.free(global_path);
-    if (fsx.exists(global_path)) {
-        const data = try fsx.readFile(allocator, global_path);
-        defer allocator.free(data);
-        return try Config.fromJson(allocator, data);
-    }
-    return null;
+    return cfgstore.load(Config, allocator, profile_name, FILE);
 }
 
 pub fn loadDirect(allocator: Allocator, profile_name: ?[]const u8) !?Config {
-    const path = try providersPath(allocator, profile_name);
-    defer allocator.free(path);
-    if (!fsx.exists(path)) return null;
-    const data = try fsx.readFile(allocator, path);
-    defer allocator.free(data);
-    return try Config.fromJson(allocator, data);
+    return cfgstore.loadDirect(Config, allocator, profile_name, FILE);
 }
 
 pub fn save(allocator: Allocator, profile_name: ?[]const u8, cfg: Config) !void {
-    const path = try providersPath(allocator, profile_name);
-    defer allocator.free(path);
-    const dir_path = std.fs.path.dirname(path) orelse return error.InvalidPath;
-    try fsx.mkdirAll(dir_path);
-    const json = try cfg.toJson(allocator);
-    defer allocator.free(json);
-    try fsx.atomicWrite(allocator, path, json);
+    return cfgstore.save(Config, allocator, profile_name, FILE, cfg);
 }
 
 pub fn deleteConfig(allocator: Allocator, profile_name: ?[]const u8) !void {
-    const path = try providersPath(allocator, profile_name);
-    defer allocator.free(path);
-    try fsx.remove(path);
+    return cfgstore.delete(allocator, profile_name, FILE);
 }

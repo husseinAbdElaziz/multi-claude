@@ -1,22 +1,27 @@
 const std = @import("std");
 const build_options = @import("build_options");
-pub const cli = @import("cli.zig");
-pub const config = @import("config.zig");
-pub const profile = @import("profile.zig");
-pub const manifest = @import("manifest.zig");
-pub const resources = @import("resources.zig");
-pub const composer = @import("composer.zig");
-pub const launcher = @import("launcher.zig");
-pub const lock = @import("lock.zig");
-pub const fsx = @import("fsx.zig");
-pub const log = @import("log.zig");
-pub const doctor = @import("doctor.zig");
-pub const update = @import("update.zig");
-pub const uninstall = @import("uninstall.zig");
-pub const web = @import("web.zig");
-pub const proxy = @import("proxy.zig");
-pub const providers = @import("providers.zig");
-pub const translator = @import("translator.zig");
+pub const cli = @import("cli/cli.zig");
+pub const config = @import("shared/config.zig");
+pub const profile = @import("profile/profile.zig");
+pub const manifest = @import("profile/manifest.zig");
+pub const resources = @import("profile/resources.zig");
+pub const composer = @import("profile/composer.zig");
+pub const launcher = @import("launcher/launcher.zig");
+pub const lock = @import("profile/lock.zig");
+pub const fsx = @import("shared/fsx.zig");
+pub const log = @import("shared/log.zig");
+pub const doctor = @import("commands/doctor.zig");
+pub const update = @import("commands/update.zig");
+pub const uninstall = @import("commands/uninstall.zig");
+pub const web = @import("web/web.zig");
+pub const proxy = @import("proxy/proxy.zig");
+pub const provider = @import("provider/provider.zig");
+pub const providers = @import("provider/providers.zig");
+pub const translator = @import("proxy/translator.zig");
+pub const httpx = @import("shared/httpx.zig");
+pub const jsonw = @import("shared/jsonw.zig");
+pub const cfgstore = @import("shared/cfgstore.zig");
+pub const proc = @import("shared/proc.zig");
 
 /// Calculate simple Levenshtein distance between two strings
 pub fn levenshtein(a: []const u8, b: []const u8) usize {
@@ -60,21 +65,20 @@ fn suggestProfiles(allocator: std.mem.Allocator, logger: log.Log, target: []cons
 
     if (!fsx.exists(profiles_dir)) return;
 
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const dir = std.Io.Dir.openDirAbsolute(io, profiles_dir, .{ .iterate = true }) catch return;
-    defer std.Io.Dir.close(dir, io);
+    const names = fsx.listSubdirs(allocator, profiles_dir) catch return;
+    defer {
+        for (names) |n| allocator.free(n);
+        allocator.free(names);
+    }
 
     var best_distance: usize = 3;
     var best_name: []const u8 = "";
 
-    var it = std.Io.Dir.iterate(dir);
-    while (it.next(io) catch return) |entry| {
-        if (entry.kind == .directory) {
-            const dist = levenshtein(target, entry.name);
-            if (dist < best_distance and dist > 0) {
-                best_distance = dist;
-                best_name = entry.name;
-            }
+    for (names) |name| {
+        const dist = levenshtein(target, name);
+        if (dist < best_distance and dist > 0) {
+            best_distance = dist;
+            best_name = name;
         }
     }
 

@@ -1,9 +1,9 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const config = @import("config.zig");
-const fsx = @import("fsx.zig");
-const Log = @import("log.zig").Log;
+const config = @import("../shared/config.zig");
+const fsx = @import("../shared/fsx.zig");
+const Log = @import("../shared/log.zig").Log;
 
 /// Heuristically detect a Homebrew-managed binary path. Homebrew installs the
 /// real file under a Cellar and symlinks it onto PATH; `executablePathAlloc`

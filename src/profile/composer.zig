@@ -1,9 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const config = @import("config.zig");
-const fsx = @import("fsx.zig");
+const config = @import("../shared/config.zig");
+const fsx = @import("../shared/fsx.zig");
 const resources = @import("resources.zig");
-const Log = @import("log.zig").Log;
+const Log = @import("../shared/log.zig").Log;
 
 /// Compose the config directory for a profile.
 /// Creates symlinks for shared resources, creates empty dirs/files for private ones.

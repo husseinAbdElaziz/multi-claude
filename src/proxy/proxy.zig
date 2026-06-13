@@ -5,10 +5,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const net = std.Io.net;
-const Log = @import("log.zig").Log;
-const providers_mod = @import("providers.zig");
+const Log = @import("../shared/log.zig").Log;
+const providers_mod = @import("../provider/providers.zig");
 const translator = @import("translator.zig");
-const config = @import("config.zig");
+const httpx = @import("../shared/httpx.zig");
 
 const ANTHROPIC_API_BASE = "https://api.anthropic.com";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -26,7 +26,7 @@ pub fn run(
     defer if (providers_cfg) |*c| c.deinit(allocator);
 
     const addr = net.IpAddress{ .ip4 = net.Ip4Address.loopback(port) };
-    var server = try net.IpAddress.listen(&addr, io, .{});
+    var server = try net.IpAddress.listen(&addr, io, .{ .reuse_address = true });
     defer server.deinit(io);
 
     logger.info("proxy listening on port {d}", .{port});
@@ -92,7 +92,7 @@ fn handleConn(
     // serves Claude Code only, never a browser, so cross-origin access is denied
     // by simply not emitting Access-Control-Allow-Origin.
     if (!requestAuthorized(&req, proxy_secret)) {
-        try req.respond("{\"error\":\"unauthorized\"}", .{ .status = .unauthorized, .keep_alive = false });
+        try httpx.respondError(&req, .unauthorized, "unauthorized");
         return;
     }
 
@@ -138,7 +138,7 @@ fn handleModels(allocator: Allocator, io: Io, req: *std.http.Server.Request, cfg
                 (e.models.len == 1 and std.mem.eql(u8, e.models[0], "*"));
 
             if (auto_discover) {
-                const fetched = fetchProviderModels(allocator, io, e.api_url, e.api_key);
+                const fetched = httpx.fetchModelIds(allocator, io, e.api_url, e.api_key) catch &.{};
                 defer {
                     for (fetched) |m| allocator.free(m);
                     allocator.free(fetched);
@@ -162,85 +162,7 @@ fn handleModels(allocator: Allocator, io: Io, req: *std.http.Server.Request, cfg
     try w.writeAll("]}");
     const body = try out.toOwnedSlice();
     defer allocator.free(body);
-    try req.respond(body, .{
-        .keep_alive = false,
-        .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
-    });
-}
-
-/// Fetch model IDs from a provider's /models endpoint. Never fails — returns empty on any error.
-/// Caller frees each string and the slice itself.
-fn fetchProviderModels(allocator: Allocator, io: Io, api_url: []const u8, api_key: ?[]u8) [][]u8 {
-    return fetchProviderModelsInner(allocator, io, api_url, api_key) catch &.{};
-}
-
-fn fetchProviderModelsInner(allocator: Allocator, io: Io, api_url: []const u8, api_key: ?[]u8) ![][]u8 {
-    const base = std.mem.trimEnd(u8, api_url, "/");
-    const url = try std.fmt.allocPrint(allocator, "{s}/models", .{base});
-    defer allocator.free(url);
-
-    const uri = try std.Uri.parse(url);
-
-    var client: std.http.Client = .{ .allocator = allocator, .io = io };
-    defer client.deinit();
-
-    // std.http.Client only loads the system CA bundle the first time it makes
-    // an HTTPS request. If the first request is plain HTTP and the server
-    // redirects to HTTPS, the redirect's TLS handshake reads client.now (set
-    // alongside the bundle) while it's still null and panics. Pre-load it so
-    // http -> https redirects work.
-    const now = Io.Clock.real.now(io);
-    client.ca_bundle.rescan(allocator, io, now) catch {};
-    client.now = now;
-
-    const auth: ?[]u8 = if (api_key) |k| try std.fmt.allocPrint(allocator, "Bearer {s}", .{k}) else null;
-    defer if (auth) |a| allocator.free(a);
-
-    const hdrs: []const std.http.Header = if (auth) |a|
-        &[_]std.http.Header{.{ .name = "authorization", .value = a }}
-    else
-        &[_]std.http.Header{};
-
-    var upstream = try client.request(.GET, uri, .{
-        .extra_headers = hdrs,
-        .keep_alive = false,
-        .headers = .{ .accept_encoding = .{ .override = "identity" } },
-    });
-    defer upstream.deinit();
-
-    try upstream.sendBodiless();
-
-    var redir_buf: [4096]u8 = undefined;
-    var response = try upstream.receiveHead(&redir_buf);
-    if (response.head.status != .ok) return error.ProviderError;
-
-    var tbuf: [4096]u8 = undefined;
-    var rdr = response.reader(&tbuf);
-    var resp_out: Io.Writer.Allocating = .init(allocator);
-    defer resp_out.deinit();
-    _ = rdr.streamRemaining(&resp_out.writer) catch 0;
-    const resp_body = try resp_out.toOwnedSlice();
-    defer allocator.free(resp_body);
-
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, resp_body, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidResponse;
-
-    const data_v = parsed.value.object.get("data") orelse return error.InvalidResponse;
-    if (data_v != .array) return error.InvalidResponse;
-
-    var models: std.ArrayList([]u8) = .empty;
-    errdefer {
-        for (models.items) |m| allocator.free(m);
-        models.deinit(allocator);
-    }
-    for (data_v.array.items) |item| {
-        if (item != .object) continue;
-        const id_v = item.object.get("id") orelse continue;
-        if (id_v != .string) continue;
-        try models.append(allocator, try allocator.dupe(u8, id_v.string));
-    }
-    return try models.toOwnedSlice(allocator);
+    try httpx.respondJson(req, body);
 }
 
 fn handleMessages(
@@ -283,7 +205,7 @@ fn handleMessages(
     // Read request body
     const body_len: usize = @intCast(req.head.content_length orelse 0);
     if (body_len == 0 or body_len > 1024 * 1024) {
-        try req.respond("{\"error\":\"bad body\"}", .{ .status = .bad_request, .keep_alive = false });
+        try httpx.respondError(req, .bad_request, "bad body");
         return;
     }
     var body_rbuf: [4096]u8 = undefined;
@@ -402,7 +324,7 @@ fn forwardToOpenAICompat(
     defer allocator.free(auth);
 
     const openai_body = translator.anthropicToOpenAI(allocator, body) catch {
-        try req.respond("{\"error\":\"translation failed\"}", .{ .status = .bad_request, .keep_alive = false });
+        try httpx.respondError(req, .bad_request, "translation failed");
         return;
     };
     defer allocator.free(openai_body);
@@ -426,7 +348,7 @@ fn forwardPassthrough(
     do_translate: bool,
 ) !void {
     const uri = std.Uri.parse(url) catch {
-        try req.respond("{\"error\":\"bad url\"}", .{ .status = .bad_request, .keep_alive = false });
+        try httpx.respondError(req, .bad_request, "bad url");
         return;
     };
 
@@ -438,18 +360,18 @@ fn forwardPassthrough(
         .keep_alive = false,
         .headers = .{ .accept_encoding = .{ .override = "identity" } },
     }) catch {
-        try req.respond("{\"error\":\"upstream connect failed\"}", .{ .status = .bad_gateway, .keep_alive = false });
+        try httpx.respondError(req, .bad_gateway, "upstream connect failed");
         return;
     };
     defer upstream.deinit();
 
     upstream.transfer_encoding = .{ .content_length = body.len };
     var bw = upstream.sendBodyUnflushed(&.{}) catch {
-        try req.respond("{\"error\":\"upstream send failed\"}", .{ .status = .bad_gateway, .keep_alive = false });
+        try httpx.respondError(req, .bad_gateway, "upstream send failed");
         return;
     };
     bw.writer.writeAll(body) catch {
-        try req.respond("{\"error\":\"upstream write failed\"}", .{ .status = .bad_gateway, .keep_alive = false });
+        try httpx.respondError(req, .bad_gateway, "upstream write failed");
         return;
     };
     bw.end() catch {};
@@ -457,7 +379,7 @@ fn forwardPassthrough(
 
     var redir_buf: [8192]u8 = undefined;
     var response = upstream.receiveHead(&redir_buf) catch {
-        try req.respond("{\"error\":\"upstream response failed\"}", .{ .status = .bad_gateway, .keep_alive = false });
+        try httpx.respondError(req, .bad_gateway, "upstream response failed");
         return;
     };
 
@@ -562,17 +484,9 @@ fn forwardPassthrough(
     if (do_translate and status == .ok) {
         const anthropic_body = translator.openAIToAnthropic(allocator, resp_body, model) catch resp_body;
         defer if (anthropic_body.ptr != resp_body.ptr) allocator.free(anthropic_body);
-        try req.respond(anthropic_body, .{
-            .status = status,
-            .keep_alive = false,
-            .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
-        });
+        try httpx.respondJsonStatus(req, status, anthropic_body);
     } else {
-        try req.respond(resp_body, .{
-            .status = status,
-            .keep_alive = false,
-            .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
-        });
+        try httpx.respondJsonStatus(req, status, resp_body);
     }
 }
 

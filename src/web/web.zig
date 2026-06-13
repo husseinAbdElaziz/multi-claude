@@ -3,10 +3,13 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const net = std.Io.net;
-const Log = @import("log.zig").Log;
-const config = @import("config.zig");
-const provider_mod = @import("provider.zig");
-const fsx = @import("fsx.zig");
+const Log = @import("../shared/log.zig").Log;
+const config = @import("../shared/config.zig");
+const provider_mod = @import("../provider/provider.zig");
+const profile = @import("../profile/profile.zig");
+const fsx = @import("../shared/fsx.zig");
+const httpx = @import("../shared/httpx.zig");
+const jsonw = @import("../shared/jsonw.zig");
 
 const Init = std.process.Init.Minimal;
 
@@ -18,7 +21,7 @@ pub fn serve(allocator: Allocator, logger: Log, init: Init, port: u16) !void {
     const io = threaded.io();
 
     const addr = net.IpAddress{ .ip4 = net.Ip4Address.loopback(port) };
-    var server = try net.IpAddress.listen(&addr, io, .{});
+    var server = try net.IpAddress.listen(&addr, io, .{ .reuse_address = true });
     defer server.deinit(io);
 
     logger.info("UI server at http://localhost:{d} — Ctrl+C to stop", .{port});
@@ -80,11 +83,7 @@ fn handleConnection(allocator: Allocator, io: Io, stream: *net.Stream, logger: L
     // CSRF: the API mutates on-disk provider configs (API keys). Reject any
     // cross-site browser request before it can touch them.
     if (std.mem.startsWith(u8, path, "/api/") and !csrfOk(&request)) {
-        try request.respond("{\"error\":\"forbidden\"}", .{
-            .status = .forbidden,
-            .keep_alive = false,
-            .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
-        });
+        try httpx.respondError(&request, .forbidden, "forbidden");
         return;
     }
 
@@ -113,12 +112,8 @@ fn handleConnection(allocator: Allocator, io: Io, stream: *net.Stream, logger: L
         // Reject path-traversal / unexpected characters before the name ever
         // reaches providerPath() (which interpolates it into a filesystem path).
         if (name) |n| {
-            if (!validProfileName(n)) {
-                try request.respond("{\"error\":\"invalid profile name\"}", .{
-                    .status = .bad_request,
-                    .keep_alive = false,
-                    .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
-                });
+            if (!profile.validateName(n)) {
+                try httpx.respondError(&request, .bad_request, "invalid profile name");
                 return;
             }
         }
@@ -186,16 +181,9 @@ fn getQueryParam(query: []const u8, key: []const u8) ?[]const u8 {
     return null;
 }
 
-fn jsonResponse(request: *std.http.Server.Request, body: []const u8) !void {
-    try request.respond(body, .{
-        .keep_alive = false,
-        .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
-    });
-}
-
 fn handleFetchModels(allocator: Allocator, io: Io, request: *std.http.Server.Request, query: []const u8) !void {
     const raw_url = getQueryParam(query, "url") orelse {
-        return jsonResponse(request, "{\"error\":\"missing url\"}");
+        return httpx.respondJson(request, "{\"error\":\"missing url\"}");
     };
     const raw_key = getQueryParam(query, "key");
 
@@ -204,96 +192,27 @@ fn handleFetchModels(allocator: Allocator, io: Io, request: *std.http.Server.Req
     const key: ?[]u8 = if (raw_key) |k| try percentDecode(allocator, k) else null;
     defer if (key) |k| allocator.free(k);
 
-    const base = std.mem.trimEnd(u8, url, "/");
-    const models_url = try std.fmt.allocPrint(allocator, "{s}/models", .{base});
-    defer allocator.free(models_url);
-
-    const uri = std.Uri.parse(models_url) catch {
-        return jsonResponse(request, "{\"error\":\"invalid url\"}");
+    // Errors (bad url, connection, non-200, malformed body) all collapse to one
+    // message — this endpoint is a convenience probe, not a diagnostic tool.
+    const ids = httpx.fetchModelIds(allocator, io, url, key) catch {
+        return httpx.respondJson(request, "{\"error\":\"could not fetch models from provider\"}");
     };
-
-    var client: std.http.Client = .{ .allocator = allocator, .io = io };
-    defer client.deinit();
-
-    // std.http.Client only loads the system CA bundle the first time it makes
-    // an HTTPS request. If the first request is plain HTTP and the server
-    // redirects to HTTPS, the redirect's TLS handshake reads client.now (set
-    // alongside the bundle) while it's still null and panics. Pre-load it so
-    // http -> https redirects work.
-    const now = Io.Clock.real.now(io);
-    client.ca_bundle.rescan(allocator, io, now) catch {};
-    client.now = now;
-
-    const auth: ?[]u8 = if (key) |k| (if (k.len > 0) try std.fmt.allocPrint(allocator, "Bearer {s}", .{k}) else null) else null;
-    defer if (auth) |a| allocator.free(a);
-
-    const hdrs: []const std.http.Header = if (auth) |a|
-        &[_]std.http.Header{.{ .name = "authorization", .value = a }}
-    else
-        &[_]std.http.Header{};
-
-    var get_req = client.request(.GET, uri, .{
-        .extra_headers = hdrs,
-        .keep_alive = false,
-        .headers = .{ .accept_encoding = .{ .override = "identity" } },
-    }) catch {
-        return jsonResponse(request, "{\"error\":\"connect failed\"}");
-    };
-    defer get_req.deinit();
-
-    get_req.sendBodiless() catch {
-        return jsonResponse(request, "{\"error\":\"request failed\"}");
-    };
-
-    var redir_buf: [4096]u8 = undefined;
-    var response = get_req.receiveHead(&redir_buf) catch {
-        return jsonResponse(request, "{\"error\":\"no response\"}");
-    };
-
-    if (response.head.status != .ok) {
-        const msg = try std.fmt.allocPrint(allocator, "{{\"error\":\"provider returned {d}\"}}", .{@intFromEnum(response.head.status)});
-        defer allocator.free(msg);
-        return jsonResponse(request, msg);
+    defer {
+        for (ids) |m| allocator.free(m);
+        allocator.free(ids);
     }
-
-    var resp_out: Io.Writer.Allocating = .init(allocator);
-    defer resp_out.deinit();
-    var rdr_buf: [4096]u8 = undefined;
-    var rdr = response.reader(&rdr_buf);
-    _ = rdr.streamRemaining(&resp_out.writer) catch 0;
-    const resp_body = try resp_out.toOwnedSlice();
-    defer allocator.free(resp_body);
-
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, resp_body, .{}) catch {
-        return jsonResponse(request, "{\"error\":\"invalid provider response\"}");
-    };
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return jsonResponse(request, "{\"error\":\"unexpected response format\"}");
-    const data_v = parsed.value.object.get("data") orelse return jsonResponse(request, "{\"error\":\"no models data in response\"}");
-    if (data_v != .array) return jsonResponse(request, "{\"error\":\"invalid models data\"}");
 
     var out: Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     try out.writer.writeByte('[');
-    var first = true;
-    for (data_v.array.items) |item| {
-        if (item != .object) continue;
-        const id_v = item.object.get("id") orelse continue;
-        if (id_v != .string) continue;
-        if (!first) try out.writer.writeByte(',');
-        first = false;
-        try out.writer.writeByte('"');
-        for (id_v.string) |c| {
-            if (c == '"' or c == '\\') try out.writer.writeByte('\\');
-            try out.writer.writeByte(c);
-        }
-        try out.writer.writeByte('"');
+    for (ids, 0..) |id, i| {
+        if (i > 0) try out.writer.writeByte(',');
+        try jsonw.writeStr(&out.writer, id);
     }
     try out.writer.writeByte(']');
     const json = try out.toOwnedSlice();
     defer allocator.free(json);
-    return jsonResponse(request, json);
+    return httpx.respondJson(request, json);
 }
 
 fn handleGetProfiles(allocator: Allocator, request: *std.http.Server.Request) !void {
@@ -303,44 +222,32 @@ fn handleGetProfiles(allocator: Allocator, request: *std.http.Server.Request) !v
     const profiles_dir = try std.fmt.allocPrint(allocator, "{s}/profiles", .{mcc_dir});
     defer allocator.free(profiles_dir);
 
+    const names = try fsx.listSubdirs(allocator, profiles_dir);
+    defer {
+        for (names) |n| allocator.free(n);
+        allocator.free(names);
+    }
+
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
     try buf.appendSlice(allocator, "[");
-    var first = true;
+    for (names, 0..) |name, i| {
+        if (i > 0) try buf.appendSlice(allocator, ",");
 
-    if (fsx.exists(profiles_dir)) {
-        const io = Io.Threaded.global_single_threaded.io();
-        const dir = Io.Dir.openDirAbsolute(io, profiles_dir, .{ .iterate = true }) catch {
-            try buf.appendSlice(allocator, "]");
-            const body = try buf.toOwnedSlice(allocator);
-            defer allocator.free(body);
-            return jsonResponse(request, body);
-        };
-        defer Io.Dir.close(dir, io);
+        var p: ?provider_mod.Provider = provider_mod.loadDirect(allocator, name) catch null;
+        defer if (p) |*pp| pp.deinit(allocator);
 
-        var it = Io.Dir.iterate(dir);
-        while (it.next(io) catch null) |entry| {
-            if (entry.kind != .directory) continue;
-
-            if (!first) try buf.appendSlice(allocator, ",");
-            first = false;
-
-            const name = entry.name;
-            var p: ?provider_mod.Provider = provider_mod.loadDirect(allocator, name) catch null;
-            defer if (p) |*pp| pp.deinit(allocator);
-
-            try buf.print(allocator, "{{\"name\":\"{s}\",\"hasProvider\":{s}}}", .{
-                name,
-                if (p != null) "true" else "false",
-            });
-        }
+        try buf.print(allocator, "{{\"name\":\"{s}\",\"hasProvider\":{s}}}", .{
+            name,
+            if (p != null) "true" else "false",
+        });
     }
-
     try buf.appendSlice(allocator, "]");
+
     const body = try buf.toOwnedSlice(allocator);
     defer allocator.free(body);
-    try jsonResponse(request, body);
+    try httpx.respondJson(request, body);
 }
 
 fn handleGetProvider(allocator: Allocator, request: *std.http.Server.Request, name: ?[]const u8) !void {
@@ -352,20 +259,16 @@ fn handleGetProvider(allocator: Allocator, request: *std.http.Server.Request, na
         defer mpp.deinit(allocator);
         const json = try pp.toJson(allocator);
         defer allocator.free(json);
-        return jsonResponse(request, json);
+        return httpx.respondJson(request, json);
     }
 
-    try jsonResponse(request, "{\"api_url\":null,\"api_key\":null,\"model\":null}");
+    try httpx.respondJson(request, "{\"api_url\":null,\"api_key\":null,\"model\":null}");
 }
 
 fn handlePostProvider(allocator: Allocator, request: *std.http.Server.Request, name: ?[]const u8) !void {
     const body_len: usize = @intCast(request.head.content_length orelse 0);
     if (body_len == 0 or body_len > 4096) {
-        try request.respond("{\"error\":\"invalid body\"}", .{
-            .status = .bad_request,
-            .keep_alive = false,
-            .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
-        });
+        try httpx.respondError(request, .bad_request, "invalid body");
         return;
     }
 
@@ -377,31 +280,23 @@ fn handlePostProvider(allocator: Allocator, request: *std.http.Server.Request, n
     const profile_name: ?[]const u8 = resolveProfileName(name);
 
     var p = provider_mod.Provider.fromJson(allocator, body) catch {
-        try request.respond("{\"error\":\"invalid JSON\"}", .{
-            .status = .bad_request,
-            .keep_alive = false,
-            .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
-        });
+        try httpx.respondError(request, .bad_request, "invalid JSON");
         return;
     };
     defer p.deinit(allocator);
 
     provider_mod.save(allocator, profile_name, p) catch {
-        try request.respond("{\"error\":\"failed to save\"}", .{
-            .status = .internal_server_error,
-            .keep_alive = false,
-            .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
-        });
+        try httpx.respondError(request, .internal_server_error, "failed to save");
         return;
     };
 
-    try jsonResponse(request, "{\"ok\":true}");
+    try httpx.respondJson(request, "{\"ok\":true}");
 }
 
 fn handleDeleteProvider(allocator: Allocator, request: *std.http.Server.Request, name: ?[]const u8) !void {
     const profile_name: ?[]const u8 = resolveProfileName(name);
     provider_mod.deleteConfig(allocator, profile_name) catch {};
-    try jsonResponse(request, "{\"ok\":true}");
+    try httpx.respondJson(request, "{\"ok\":true}");
 }
 
 /// Cross-site request protection. Modern browsers send Sec-Fetch-Site on every
@@ -423,23 +318,6 @@ fn csrfOk(request: *std.http.Server.Request) bool {
         return std.mem.startsWith(u8, o, "http://localhost:") or
             std.mem.startsWith(u8, o, "http://127.0.0.1:") or
             std.mem.startsWith(u8, o, "http://[::1]:");
-    }
-    return true;
-}
-
-/// Allowlist a profile name to a single path segment. Rejects empty, overly
-/// long, traversal (".", ".."), and anything outside [A-Za-z0-9._-] — which
-/// also blocks "/" and "\" path separators and NUL. Note: query params are not
-/// URL-decoded, so percent-escapes can never re-introduce a separator later.
-fn validProfileName(name: []const u8) bool {
-    if (name.len == 0 or name.len > 64) return false;
-    if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return false;
-    for (name) |ch| {
-        const ok = (ch >= 'A' and ch <= 'Z') or
-            (ch >= 'a' and ch <= 'z') or
-            (ch >= '0' and ch <= '9') or
-            ch == '.' or ch == '_' or ch == '-';
-        if (!ok) return false;
     }
     return true;
 }

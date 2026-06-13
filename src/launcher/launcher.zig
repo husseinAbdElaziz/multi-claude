@@ -1,15 +1,18 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const config = @import("config.zig");
-const composer = @import("composer.zig");
-const manifest = @import("manifest.zig");
-const lock = @import("lock.zig");
-const provider_mod = @import("provider.zig");
-const providers_mod = @import("providers.zig");
-const proxy_mod = @import("proxy.zig");
-const update = @import("update.zig");
-const fsx = @import("fsx.zig");
-const Log = @import("log.zig").Log;
+const config = @import("../shared/config.zig");
+const composer = @import("../profile/composer.zig");
+const manifest = @import("../profile/manifest.zig");
+const lock = @import("../profile/lock.zig");
+const provider_mod = @import("../provider/provider.zig");
+const providers_mod = @import("../provider/providers.zig");
+const proxy_mod = @import("../proxy/proxy.zig");
+const update = @import("../commands/update.zig");
+const fsx = @import("../shared/fsx.zig");
+const proc = @import("../shared/proc.zig");
+const Log = @import("../shared/log.zig").Log;
+
+const propagateTerm = proc.propagateTerm;
 
 const Init = std.process.Init.Minimal;
 const Io = std.Io;
@@ -273,11 +276,3 @@ fn startProxyIfNeeded(
     return port;
 }
 
-fn propagateTerm(term: std.process.Child.Term) noreturn {
-    switch (term) {
-        .exited => |code| std.process.exit(code),
-        .signal => |sig| std.process.exit(@as(u8, @intCast(128 + @intFromEnum(sig)))),
-        .stopped => |sig| std.process.exit(@as(u8, @intCast(128 + @intFromEnum(sig)))),
-        .unknown => |code| std.process.exit(@as(u8, @intCast(code))),
-    }
-}

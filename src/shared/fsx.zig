@@ -111,6 +111,32 @@ pub fn atomicWrite(allocator: Allocator, full_path: []const u8, content: []const
     };
 }
 
+/// List the names of immediate subdirectories of `path`. Returns an owned slice
+/// of owned names (caller frees each name and the slice). Yields an empty slice
+/// when `path` is missing or cannot be opened — never errors on those.
+pub fn listSubdirs(allocator: Allocator, path: []const u8) ![][]u8 {
+    var names: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (names.items) |n| allocator.free(n);
+        names.deinit(allocator);
+    }
+
+    const io = getIo();
+    const dir = (if (std.fs.path.isAbsolute(path))
+        Io.Dir.openDirAbsolute(io, path, .{ .iterate = true })
+    else
+        Io.Dir.cwd().openDir(io, path, .{ .iterate = true })) catch
+        return names.toOwnedSlice(allocator);
+    defer Io.Dir.close(dir, io);
+
+    var it = Io.Dir.iterate(dir);
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        try names.append(allocator, try allocator.dupe(u8, entry.name));
+    }
+    return names.toOwnedSlice(allocator);
+}
+
 /// Read a file to string
 pub fn readFile(allocator: Allocator, path: []const u8) ![]u8 {
     const io = getIo();

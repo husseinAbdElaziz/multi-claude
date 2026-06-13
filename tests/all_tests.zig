@@ -17,9 +17,14 @@ test "source modules compile" {
     std.testing.refAllDecls(Src.doctor);
     std.testing.refAllDecls(Src.update);
     std.testing.refAllDecls(Src.uninstall);
+    std.testing.refAllDecls(Src.provider);
     std.testing.refAllDecls(Src.providers);
     std.testing.refAllDecls(Src.translator);
     std.testing.refAllDecls(Src.proxy);
+    std.testing.refAllDecls(Src.httpx);
+    std.testing.refAllDecls(Src.jsonw);
+    std.testing.refAllDecls(Src.cfgstore);
+    std.testing.refAllDecls(Src.proc);
 }
 
 // Pull in the actual test suites by importing their files so their `test`

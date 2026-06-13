@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const fsx = @import("fsx.zig");
-const config = @import("config.zig");
+const fsx = @import("../shared/fsx.zig");
+const config = @import("../shared/config.zig");
 
 pub const Manifest = struct {
     /// Profile name

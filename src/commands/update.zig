@@ -1,12 +1,15 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const build_options = @import("build_options");
-const Log = @import("log.zig").Log;
-const config = @import("config.zig");
-const fsx = @import("fsx.zig");
+const Log = @import("../shared/log.zig").Log;
+const config = @import("../shared/config.zig");
+const fsx = @import("../shared/fsx.zig");
+const proc = @import("../shared/proc.zig");
 
 const Init = std.process.Init.Minimal;
 const Io = std.Io;
+
+const propagateTerm = proc.propagateTerm;
 
 /// URL of the canonical installer, which already handles OS/arch detection,
 /// release resolution, checksum verification, and PATH placement.
@@ -164,15 +167,6 @@ pub fn notifyIfOutdated(allocator: Allocator, logger: Log, init: Init) void {
         run(allocator, logger, init, false) catch {};
     } else {
         logger.info("skipping update — run `mcc update` later to upgrade", .{});
-    }
-}
-
-fn propagateTerm(term: std.process.Child.Term) noreturn {
-    switch (term) {
-        .exited => |code| std.process.exit(code),
-        .signal => |sig| std.process.exit(@as(u8, @intCast(128 + @intFromEnum(sig)))),
-        .stopped => |sig| std.process.exit(@as(u8, @intCast(128 + @intFromEnum(sig)))),
-        .unknown => |code| std.process.exit(@as(u8, @intCast(code))),
     }
 }
 
