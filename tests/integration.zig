@@ -14,6 +14,14 @@ fn getIo() Io {
     return Io.Threaded.global_single_threaded.io();
 }
 
+/// Random u32 suffix so parallel `zig build test` runs don't collide on the
+/// same tmp-dir name. Uses the global io for entropy.
+fn randomSuffix(io: Io) u32 {
+    var buf: [4]u8 = undefined;
+    io.randomSecure(&buf) catch return 0;
+    return @bitCast(buf);
+}
+
 /// Create a fake claude config directory for integration tests
 fn setupFakeClaudeDir(allocator: std.mem.Allocator, base: []const u8) !void {
     const claude_dir = try std.fmt.allocPrint(allocator, "{s}/.claude", .{base});
@@ -46,8 +54,9 @@ test "integration: create shared profile and verify symlinks" {
     const io = getIo();
 
     // Create temp directory
-    const tmp_dir = try std.fmt.allocPrint(gpa, "/tmp/mcc_integration_test_{d}", .{
+    const tmp_dir = try std.fmt.allocPrint(gpa, "/tmp/mcc_integration_test_{d}_{x}", .{
         @as(u64, @intCast(Io.Timestamp.now(io, .real).toSeconds())),
+        randomSuffix(io),
     });
     defer gpa.free(tmp_dir);
     defer fsx.removeAll(tmp_dir) catch {};
@@ -124,8 +133,9 @@ test "integration: create isolated profile and verify no symlinks" {
     const gpa = std.testing.allocator;
     const io = getIo();
 
-    const tmp_dir = try std.fmt.allocPrint(gpa, "/tmp/mcc_isolated_test_{d}", .{
+    const tmp_dir = try std.fmt.allocPrint(gpa, "/tmp/mcc_isolated_test_{d}_{x}", .{
         @as(u64, @intCast(Io.Timestamp.now(io, .real).toSeconds())),
+        randomSuffix(io),
     });
     defer gpa.free(tmp_dir);
     defer fsx.removeAll(tmp_dir) catch {};
@@ -188,8 +198,9 @@ test "integration: profile deletion does not affect shared resources" {
     const gpa = std.testing.allocator;
     const io = getIo();
 
-    const tmp_dir = try std.fmt.allocPrint(gpa, "/tmp/mcc_delete_test_{d}", .{
+    const tmp_dir = try std.fmt.allocPrint(gpa, "/tmp/mcc_delete_test_{d}_{x}", .{
         @as(u64, @intCast(Io.Timestamp.now(io, .real).toSeconds())),
+        randomSuffix(io),
     });
     defer gpa.free(tmp_dir);
     defer fsx.removeAll(tmp_dir) catch {};
@@ -233,8 +244,9 @@ test "integration: lock acquisition and release" {
     const gpa = std.testing.allocator;
     const io = getIo();
 
-    const tmp_dir = try std.fmt.allocPrint(gpa, "/tmp/mcc_lock_test_{d}", .{
+    const tmp_dir = try std.fmt.allocPrint(gpa, "/tmp/mcc_lock_test_{d}_{x}", .{
         @as(u64, @intCast(Io.Timestamp.now(io, .real).toSeconds())),
+        randomSuffix(io),
     });
     defer gpa.free(tmp_dir);
     defer fsx.removeAll(tmp_dir) catch {};
@@ -264,8 +276,9 @@ test "integration: atomic write and read consistency" {
     const gpa = std.testing.allocator;
     const io = getIo();
 
-    const tmp_dir = try std.fmt.allocPrint(gpa, "/tmp/mcc_atomic_test_{d}", .{
+    const tmp_dir = try std.fmt.allocPrint(gpa, "/tmp/mcc_atomic_test_{d}_{x}", .{
         @as(u64, @intCast(Io.Timestamp.now(io, .real).toSeconds())),
+        randomSuffix(io),
     });
     defer gpa.free(tmp_dir);
     defer fsx.removeAll(tmp_dir) catch {};

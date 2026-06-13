@@ -23,7 +23,10 @@ pub const jsonw = @import("shared/jsonw.zig");
 pub const cfgstore = @import("shared/cfgstore.zig");
 pub const proc = @import("shared/proc.zig");
 
-/// Calculate simple Levenshtein distance between two strings
+/// Edit distance (Levenshtein) between two short strings, used to suggest
+/// a near-match when the user types a profile name that doesn't exist
+/// (e.g. "peronal" → "personal"). Returns 0 if either string is too long
+/// for the fixed-size scratch buffers (>63 chars).
 pub fn levenshtein(a: []const u8, b: []const u8) usize {
     const m = a.len;
     const n = b.len;
@@ -55,7 +58,10 @@ pub fn levenshtein(a: []const u8, b: []const u8) usize {
     return row_a[n];
 }
 
-/// Find similar profile names and suggest them
+/// When the user references a profile that doesn't exist, scan the
+/// profiles dir and print "did you mean '<name>'?" if one is within edit
+/// distance 3. Best-effort: any error reading the dir or scoring is
+/// silently ignored — the suggestion is a courtesy, not a requirement.
 fn suggestProfiles(allocator: std.mem.Allocator, logger: log.Log, target: []const u8) !void {
     const mcc_dir = config.mccDir(allocator) catch return;
     defer allocator.free(mcc_dir);
@@ -87,12 +93,22 @@ fn suggestProfiles(allocator: std.mem.Allocator, logger: log.Log, target: []cons
     }
 }
 
+/// Entry point. The runtime hands us a `process.Init.Minimal` which
+/// provides the process arguments and environment in the new zig 0.16 Io
+/// world; the rest of the program works against the global page allocator.
+///
+/// Flow:
+///   1. Materialize args into a slice the parser can index.
+///   2. Parse into a `ParsedCli`.
+///   3. Dispatch on the command, exiting with non-zero status on errors
+///      (using `std.process.exit` so deferred frees don't run — the OS
+///      reclaims everything anyway).
 pub fn main(init: std.process.Init.Minimal) !void {
     const gpa = std.heap.page_allocator;
 
     // Collect command-line args (skip the program name)
     var args_it = std.process.Args.Iterator.init(init.args);
-    _ = args_it.next(); // skip program name
+    _ = args_it.next(); // skip program name (argv[0])
 
     var args_list = std.ArrayList([]const u8).initCapacity(gpa, 0) catch unreachable;
     defer args_list.deinit(gpa);
@@ -108,10 +124,19 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     const logger: log.Log = log.Log.init(parsed.verbose);
 
+    // Dispatch on the selected command. The `process.exit(1)` calls are
+    // deliberate — `defer`s won't run on a hard exit, but the OS reclaims
+    // all of the gpa-allocated memory when the process dies.
     switch (parsed.command) {
+        // `mcc` with no args → run claude with the default profile. This is
+        // the "drop-in replacement for `claude`" path.
         .run_default => {
             try launcher.runDefault(gpa, logger, init);
         },
+        // `mcc <name>` → run claude with the named profile. We validate the
+        // name (no path traversal) and the directory's existence up front so
+        // the user gets a friendly error before any claude-spawning setup
+        // happens. On a missing profile we offer a "did you mean?" hint.
         .run_profile => {
             const pname = parsed.profile orelse {
                 logger.err("profile name required", .{});
@@ -136,6 +161,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
             try launcher.runProfile(gpa, logger, pname, parsed.extra_args, init);
         },
+        // `mcc new <name>` → create a new profile. `--no-share` is parsed
+        // earlier and read from `parsed.no_share`.
         .new => {
             const pname = parsed.profile orelse {
                 logger.err("profile name required", .{});
@@ -143,6 +170,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             };
             try profile.create(gpa, logger, pname, parsed.no_share);
         },
+        // `mcc delete <name>` → remove a profile's directory.
         .delete => {
             const pname = parsed.profile orelse {
                 logger.err("profile name required", .{});
@@ -150,9 +178,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
             };
             try profile.delete(gpa, logger, pname);
         },
+        // `mcc ls` → list profile names + their shared/isolated mode.
         .ls => {
             try profile.list(gpa, logger);
         },
+        // `mcc which <name>` → print the CLAUDE_CONFIG_DIR mcc would set
+        // for the named profile (the value of the env var it injects).
         .which => {
             const pname = parsed.profile orelse {
                 logger.err("profile name required", .{});
@@ -160,18 +191,29 @@ pub fn main(init: std.process.Init.Minimal) !void {
             };
             try profile.which(gpa, logger, pname);
         },
+        // `mcc doctor` → run environment + profile health checks.
         .doctor => {
             try doctor.check(gpa, logger);
         },
+        // `mcc update [--force]` → check GitHub for a newer release and
+        // self-install over the running binary.
         .update => {
             try update.run(gpa, logger, init, parsed.yes);
         },
+        // `mcc uninstall [--yes]` → remove mcc's data dir and binary.
         .uninstall => {
             try uninstall.run(gpa, logger, parsed.yes);
         },
+        // `mcc ui [--port N]` → serve the provider config web UI on
+        // localhost. Defaults to port 8989.
         .ui => {
             try web.serve(gpa, logger, init, parsed.port);
         },
+        // `mcc __proxy__ <profile> <port>` → INTERNAL. The launcher spawns
+        // this subcommand to host the local routing proxy. We carry the
+        // real ANTHROPIC_API_KEY through env so the proxy can swap it onto
+        // upstream requests, and the per-run secret that the launcher
+        // injects via ANTHROPIC_CUSTOM_HEADERS.
         .proxy => {
             const pname = parsed.profile orelse {
                 logger.err("proxy: profile required", .{});
@@ -200,6 +242,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
 }
 
+/// Print the user-facing help text. Uses the single-threaded Io because we
+/// don't have one yet at the help/version path and the output is small
+/// enough that we don't need thread-pool overhead.
 fn printUsage() void {
     const io = std.Io.Threaded.global_single_threaded.io();
     const out = std.Io.File.stdout();
@@ -208,6 +253,7 @@ fn printUsage() void {
         \\
         \\Commands:
         \\  <profile>              Run claude with the specified profile
+        \\  <profile> -- <args>    Pass extra args through to claude
         \\  new <profile>          Create a new profile (shared by default)
         \\  new <profile> --no-share  Create an isolated profile
         \\  delete <profile>       Delete a profile
@@ -215,12 +261,13 @@ fn printUsage() void {
         \\  which <profile>        Show config directory for a profile
         \\  doctor                 Check environment configuration
         \\  ui [--port <n>]        Open provider config UI (default port 8989)
-        \\  update                 Update mcc to the latest release
-        \\  uninstall [--yes]      Remove mcc data (~/.multi-claude) and the binary
+        \\  update [--force]       Update mcc to the latest release
+        \\  uninstall [--yes|-y]   Remove mcc data (~/.multi-claude) and the binary
         \\
         \\Options:
         \\  --help, -h             Show this help message
         \\  --version, -v          Show version
+        \\  --verbose, -vv         Enable debug logging
         \\
         \\Running with no arguments runs claude with the default profile.
         \\
@@ -228,6 +275,8 @@ fn printUsage() void {
     _ = std.Io.File.writeStreamingAll(out, io, msg) catch {};
 }
 
+/// Print the version compiled into the binary (see build.zig's
+/// `-Dversion` option — the CI release build passes the release tag here).
 fn printVersion() void {
     const io = std.Io.Threaded.global_single_threaded.io();
     const out = std.Io.File.stdout();

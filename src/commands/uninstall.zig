@@ -5,17 +5,21 @@ const config = @import("../shared/config.zig");
 const fsx = @import("../shared/fsx.zig");
 const Log = @import("../shared/log.zig").Log;
 
-/// Heuristically detect a Homebrew-managed binary path. Homebrew installs the
-/// real file under a Cellar and symlinks it onto PATH; `executablePathAlloc`
-/// follows symlinks, so we see the Cellar path here.
+/// Heuristically detect a Homebrew-managed binary path. Homebrew
+/// installs the real file under a Cellar and symlinks it onto PATH;
+/// `executablePathAlloc` follows symlinks, so we see the Cellar path
+/// here. When the binary is brew-managed we leave it in place and
+/// direct the user to `brew uninstall mcc` instead.
 fn isBrewManaged(path: []const u8) bool {
     return std.mem.indexOf(u8, path, "/Cellar/") != null or
         std.mem.indexOf(u8, path, "/.linuxbrew/") != null or
         std.mem.indexOf(u8, path, "/homebrew/Cellar/") != null;
 }
 
-/// Ask the user to confirm a destructive action. Returns true only on an
-/// explicit "y"/"yes". Any read error or empty input is treated as "no".
+/// Ask "Continue? [y/N]" on the terminal. Returns true only on an
+/// explicit "y"/"yes"; any read error or empty input is treated as
+/// "no". Conservative on purpose — this gates deletion of the user's
+/// mcc data + binary.
 fn confirm(io: Io) bool {
     const out = Io.File.stdout();
     Io.File.writeStreamingAll(out, io, "Continue? [y/N] ") catch {};
@@ -29,8 +33,18 @@ fn confirm(io: Io) bool {
     return line.len > 0 and (line[0] == 'y' or line[0] == 'Y');
 }
 
-/// Remove mcc's data directory and (unless Homebrew-managed) the binary itself.
-/// Never touches `~/.claude`.
+/// Remove mcc's data directory and (unless Homebrew-managed) the
+/// binary itself. NEVER touches `~/.claude` — only the mcc-owned dir
+/// at `~/.multi-claude` and the binary the user ran are at stake.
+///
+/// Flow:
+///   1. Resolve the data dir and the binary path; classify Homebrew.
+///   2. Print what will be removed and ask for confirmation
+///      (skipped when `--yes` / `-y` is given).
+///   3. Remove the data dir if present.
+///   4. Remove the binary if not Homebrew-managed. Unlinking a running
+///      executable is fine on POSIX — the inode survives until this
+///      process exits.
 pub fn run(allocator: Allocator, logger: Log, assume_yes: bool) !void {
     const io = Io.Threaded.global_single_threaded.io();
 
@@ -45,6 +59,10 @@ pub fn run(allocator: Allocator, logger: Log, assume_yes: bool) !void {
 
     const brew_managed = if (exe_path) |p| isBrewManaged(p) else false;
 
+    // Print exactly what will be removed before asking. Listing the
+    // data dir explicitly (and calling out that ~/.claude is left
+    // alone) is intentional — uninstall is a destructive action and
+    // the user should never have to guess at scope.
     logger.info("The following will be removed:", .{});
     if (data_exists) {
         logger.info("  - data:   {s}  (all profiles; ~/.claude is untouched)", .{mcc_dir});
@@ -59,6 +77,9 @@ pub fn run(allocator: Allocator, logger: Log, assume_yes: bool) !void {
         }
     }
     if (brew_managed) {
+        // Brew-managed binaries are owned by the user's brew
+        // installation; removing them by hand would leave brew
+        // thinking it's still there.
         logger.warn("mcc was installed via Homebrew; run 'brew uninstall mcc' to remove the binary.", .{});
     }
 
@@ -78,8 +99,8 @@ pub fn run(allocator: Allocator, logger: Log, assume_yes: bool) !void {
         if (brew_managed) {
             logger.info("left binary in place (use 'brew uninstall mcc')", .{});
         } else {
-            // Unlinking a running executable is fine on POSIX: the inode stays
-            // alive until this process exits.
+            // Unlinking a running executable is fine on POSIX: the
+            // inode stays alive until this process exits.
             Io.Dir.deleteFileAbsolute(io, p) catch |err| {
                 logger.err("could not remove binary {s}: {} — remove it manually (you may need sudo)", .{ p, err });
                 return;

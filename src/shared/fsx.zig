@@ -8,7 +8,12 @@ fn getIo() Io {
     return Io.Threaded.global_single_threaded.io();
 }
 
-/// Create a symbolic link: link_path -> target_path
+/// Create a symbolic link: `link_path` → `target`.
+///
+/// Returns `error.SymlinkUnsupported` on Windows (the profile-sharing
+/// feature relies on symlinks; Windows is unsupported project-wide).
+/// Caller should ensure no existing entry is at `link_path` first
+/// (use `remove`).
 pub fn symlinkCreate(target: []const u8, link_path: []const u8) !void {
     if (builtin.os.tag == .windows) {
         return error.SymlinkUnsupported;
@@ -25,7 +30,9 @@ pub fn symlinkCreate(target: []const u8, link_path: []const u8) !void {
     if (rc != 0) return std.posix.unexpectedErrno(std.posix.errno(rc));
 }
 
-/// Check if a path is a symlink
+/// Is `path` a symbolic link? Returns false on any error (missing
+/// file, not a link, permission denied) — callers use this as a
+/// "best-effort classification" hint.
 pub fn isSymlink(path: []const u8) bool {
     const io = getIo();
     var buf: [256]u8 = undefined;
@@ -36,7 +43,8 @@ pub fn isSymlink(path: []const u8) bool {
     }
 }
 
-/// Create a directory and all parent directories as needed
+/// Create a directory and any missing parents (the moral equivalent
+/// of `mkdir -p`). A pre-existing directory is not an error.
 pub fn mkdirAll(path: []const u8) !void {
     const io = getIo();
     Io.Dir.createDirPath(Io.Dir.cwd(), io, path) catch |err| switch (err) {
@@ -45,8 +53,10 @@ pub fn mkdirAll(path: []const u8) !void {
     };
 }
 
-/// Check if a path exists (file or directory). Any access error (not found,
-/// permission, etc.) is treated as "does not exist".
+/// Does `path` exist (file, directory, symlink target, or symlink)?
+/// Any access error (not found, permission denied, etc.) is treated
+/// as "does not exist" so callers can use this as a single check
+/// without distinguishing error kinds.
 pub fn exists(path: []const u8) bool {
     const io = getIo();
     if (std.fs.path.isAbsolute(path)) {
@@ -57,7 +67,9 @@ pub fn exists(path: []const u8) bool {
     return true;
 }
 
-/// Delete a file or symlink (idempotent - ignores if not found)
+/// Delete a file or symlink. Idempotent — a missing file is not an
+/// error, since the caller is just trying to ensure it doesn't exist.
+/// (Not for directories; use `removeAll` for those.)
 pub fn remove(path: []const u8) !void {
     const io = getIo();
     if (std.fs.path.isAbsolute(path)) {
@@ -67,7 +79,9 @@ pub fn remove(path: []const u8) !void {
     }
 }
 
-/// Remove a directory and all its contents recursively (idempotent - ignores if not found)
+/// Recursively remove a directory and all its contents. Idempotent —
+/// a missing directory is not an error. This is what `mcc delete` and
+/// `mcc uninstall` use to wipe profile / data dirs.
 pub fn removeAll(path: []const u8) !void {
     const io = getIo();
     if (std.fs.path.isAbsolute(path)) {
@@ -81,7 +95,13 @@ pub fn removeAll(path: []const u8) !void {
     }
 }
 
-/// Write content to a file atomically (write to temp, then rename)
+/// Write `content` to `full_path` atomically: write to `<path>.tmp`,
+/// fsync-equivalent (`chmod 0600` for secret files), rename over the
+/// final path. A crash mid-write leaves the original file intact
+/// (or the temp file, which is overwritten on the next save).
+///
+/// Used for all config writes (manifest.zon, provider.json, ...) so
+/// a partial write can never leave a corrupt config on disk.
 pub fn atomicWrite(allocator: Allocator, full_path: []const u8, content: []const u8) !void {
     const io = getIo();
     const tmp_path = try std.mem.concat(allocator, u8, &.{ full_path, ".tmp" });
@@ -105,7 +125,14 @@ pub fn atomicWrite(allocator: Allocator, full_path: []const u8, content: []const
         _ = std.c.chmod(&pbuf, 0o600);
     }
 
-    Io.Dir.renameAbsolute(tmp_path, full_path, io) catch |err| {
+    // Branch on absolute vs. relative the same way as the createFile call
+    // above. renameAbsolute asserts on relative paths, which would trap in
+    // debug and silently miscompile in release.
+    const rename = if (std.fs.path.isAbsolute(tmp_path))
+        Io.Dir.renameAbsolute(tmp_path, full_path, io)
+    else
+        Io.Dir.cwd().rename(tmp_path, Io.Dir.cwd(), full_path, io);
+    rename catch |err| {
         remove(tmp_path) catch {};
         return err;
     };
@@ -137,7 +164,10 @@ pub fn listSubdirs(allocator: Allocator, path: []const u8) ![][]u8 {
     return names.toOwnedSlice(allocator);
 }
 
-/// Read a file to string
+/// Read an entire file into an allocated buffer. Errors on missing
+/// files, unreadable files, or stat failures. For files in the
+/// multi-KiB range or larger this is fine; for huge files you'd want
+/// a streaming reader instead.
 pub fn readFile(allocator: Allocator, path: []const u8) ![]u8 {
     const io = getIo();
     const file = if (std.fs.path.isAbsolute(path))

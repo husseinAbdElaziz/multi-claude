@@ -1,16 +1,25 @@
-/// Shared HTTP helpers: an outbound client factory + model discovery, and a few
-/// canned response writers for the local servers (proxy.zig and web.zig).
+/// Shared HTTP helpers used by the proxy (outbound) and the web UI /
+/// proxy (inbound):
+///   - `newClient`     — build a std.http.Client with the CA bundle pre-loaded
+///   - `fetchModelIds` — call GET /v1/models on a provider and parse the
+///                       `data[].id` list (used by both the proxy and the UI
+///                       "fetch models" button)
+///   - `respondJson*`  — canned 200 / status / error responses for our local
+///                       servers
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
-/// Create an HTTP client with the system CA bundle pre-loaded.
+/// Build a new `std.http.Client` with the system CA bundle already loaded.
 ///
-/// std.http.Client only loads the CA bundle the first time it makes an HTTPS
-/// request. If the first request is plain HTTP and the server redirects to
-/// HTTPS, the redirect's TLS handshake reads client.now (set alongside the
-/// bundle) while it's still null and panics. Pre-loading it here makes
-/// http -> https redirects work. Caller owns the client and must deinit().
+/// Why pre-load: `std.http.Client` only loads the CA bundle the first time
+/// it makes an HTTPS request. If the first request is plain HTTP and the
+/// server redirects to HTTPS, the redirect's TLS handshake reads
+/// `client.now` (set alongside the bundle) while it's still null and
+/// panics. Pre-loading it here makes `http://` → `https://` redirects
+/// safe.
+///
+/// Caller owns the returned client and must call `.deinit()` on it.
 pub fn newClient(allocator: Allocator, io: Io) std.http.Client {
     var client: std.http.Client = .{ .allocator = allocator, .io = io };
     const now = Io.Clock.real.now(io);
@@ -19,9 +28,16 @@ pub fn newClient(allocator: Allocator, io: Io) std.http.Client {
     return client;
 }
 
-/// GET `{base_url}/models` and return the provider's model id list.
-/// `api_key`, when non-empty, is sent as a Bearer token. Caller frees each
-/// string and the slice itself.
+/// GET `{base_url}/models` and return the list of model ids in the response.
+///
+/// `api_key`, when non-empty, is sent as a `Bearer` token. An empty key is
+/// the same as no key (some local servers like LM Studio accept unauth'd
+/// requests). Caller owns the returned strings AND the outer slice and must
+/// free each.
+///
+/// Returns `error.ProviderError` for non-200 responses and
+/// `error.InvalidResponse` when the JSON is missing the expected
+/// `{ "data": [{ "id": "..." }] }` shape.
 pub fn fetchModelIds(allocator: Allocator, io: Io, base_url: []const u8, api_key: ?[]const u8) ![][]u8 {
     const base = std.mem.trimEnd(u8, base_url, "/");
     const url = try std.fmt.allocPrint(allocator, "{s}/models", .{base});
@@ -85,22 +101,30 @@ pub fn fetchModelIds(allocator: Allocator, io: Io, base_url: []const u8, api_key
     return try models.toOwnedSlice(allocator);
 }
 
-// ─── Server responses ────────────────────────────────────────────────────────
+// ─── Inbound server responses ────────────────────────────────────────────────
+//
+// Convenience wrappers over `std.http.Server.Request.respond` that always:
+//   1. set `Content-Type: application/json`
+//   2. close the connection after the response
+// so callers don't have to remember either of those for every response.
 
 const json_ct = std.http.Header{ .name = "content-type", .value = "application/json" };
 
-/// Respond 200 with a JSON body.
+/// Respond 200 OK with `body` as JSON.
 pub fn respondJson(req: *std.http.Server.Request, body: []const u8) !void {
     try req.respond(body, .{ .keep_alive = false, .extra_headers = &.{json_ct} });
 }
 
-/// Respond with an explicit status and a JSON body.
+/// Respond with an explicit HTTP status and `body` as JSON.
 pub fn respondJsonStatus(req: *std.http.Server.Request, status: std.http.Status, body: []const u8) !void {
     try req.respond(body, .{ .status = status, .keep_alive = false, .extra_headers = &.{json_ct} });
 }
 
-/// Respond with a status and a `{"error":"<msg>"}` JSON body. `msg` must not
-/// contain characters needing JSON escaping (it never does at call sites).
+/// Respond with a status and a `{"error":"<msg>"}` JSON body.
+///
+/// `msg` must be a plain ASCII message with no characters that need JSON
+/// escaping (no `"`, no control chars). Every call site in this codebase
+/// passes a string literal that satisfies that.
 pub fn respondError(req: *std.http.Server.Request, status: std.http.Status, msg: []const u8) !void {
     var buf: [256]u8 = undefined;
     const body = std.fmt.bufPrint(&buf, "{{\"error\":\"{s}\"}}", .{msg}) catch "{\"error\":\"error\"}";

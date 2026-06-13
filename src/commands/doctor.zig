@@ -5,7 +5,14 @@ const config = @import("../shared/config.zig");
 const fsx = @import("../shared/fsx.zig");
 const Log = @import("../shared/log.zig").Log;
 
-/// Check the environment and report issues
+/// Run a set of health checks and report each one. Exits non-zero when
+/// any blocking check fails. Checks:
+///
+///   1. `claude` is on PATH
+///   2. $CLAUDE_CONFIG_DIR state in the current shell (informational)
+///   3. ~/.claude exists (warn if not — claude needs to run once first)
+///   4. ~/.multi-claude exists (info if not — created on first `mcc new`)
+///   5. no broken symlinks inside any profile's config dir
 pub fn check(allocator: Allocator, logger: Log) !void {
     var ok = true;
 
@@ -87,6 +94,10 @@ pub fn check(allocator: Allocator, logger: Log) !void {
     }
 }
 
+/// Count broken symlinks inside `dir_path`. A symlink is "broken" when
+/// `readlink` returns a target that doesn't exist (the symlink resolves
+/// to nothing). This usually means the user's real ~/.claude was
+/// reorganized and a previously-symlinked file moved or was deleted.
 fn checkBrokenSymlinks(allocator: Allocator, dir_path: []const u8) usize {
     var count: usize = 0;
     const io = Io.Threaded.global_single_threaded.io();
@@ -116,6 +127,9 @@ fn checkBrokenSymlinks(allocator: Allocator, dir_path: []const u8) usize {
     return count;
 }
 
+/// Search $PATH for an executable file named `name`. Returns the first
+/// directory that contains a file with that name, or null if it's not
+/// anywhere on PATH. The returned path is allocated; caller frees.
 fn findExecutable(allocator: Allocator, name: []const u8) !?[]u8 {
     const path_var = try config.getEnvVar(allocator, "PATH");
     defer if (path_var) |p| allocator.free(p);

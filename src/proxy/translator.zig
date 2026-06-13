@@ -1,4 +1,9 @@
 /// Translates between Anthropic Messages API and OpenAI Chat Completions API.
+///
+/// Used by the proxy when the user has configured an `openai_compat`
+/// provider (LM Studio, Ollama, OpenAI, Groq, etc.). Claude Code speaks
+/// Anthropic; the provider speaks OpenAI; this module is the bridge in
+/// both directions, including streaming SSE.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
@@ -11,6 +16,19 @@ const valueToJson = jsonw.valueToJson;
 
 // ─── Request: Anthropic → OpenAI ─────────────────────────────────────────────
 
+/// Convert an Anthropic Messages request body into an OpenAI Chat
+/// Completions request body. Handles:
+///   - top-level `model`, `max_tokens`, `temperature`, `stream`, `tools`,
+///     `tool_choice` (mapped to OpenAI's `function` form)
+///   - `system` (string OR array of `{type, text}` blocks → single system
+///     message prepended to the messages list)
+///   - user messages with tool_result blocks → OpenAI `role:"tool"`
+///     messages with matching `tool_call_id`
+///   - assistant messages with tool_use blocks → OpenAI `tool_calls` array
+///     on the assistant message
+///
+/// Returns an owned JSON string. Errors with `error.InvalidRequest` when
+/// the input isn't a JSON object.
 pub fn anthropicToOpenAI(allocator: Allocator, body: []const u8) ![]u8 {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     defer parsed.deinit();
@@ -243,6 +261,17 @@ pub fn anthropicToOpenAI(allocator: Allocator, body: []const u8) ![]u8 {
 
 // ─── Response: OpenAI → Anthropic (non-streaming) ────────────────────────────
 
+/// Convert an OpenAI Chat Completions response body back into an
+/// Anthropic Messages response body. Picks the first choice (Claude
+/// Code only handles one), maps `finish_reason` (`tool_calls` →
+/// `stop_reason: tool_use`, anything else → `end_turn`), emits text
+/// content and any `tool_calls` as Anthropic `tool_use` blocks, and
+/// includes `usage` as `{input_tokens, output_tokens}`.
+///
+/// The `model` argument is echoed back in the Anthropic response's
+/// `model` field, which is the *requested* model id (after Claude Code's
+/// own routing prefixes are stripped) — Claude Code then matches that
+/// against what it asked for.
 pub fn openAIToAnthropic(allocator: Allocator, body: []const u8, model: []const u8) ![]u8 {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     defer parsed.deinit();
@@ -311,6 +340,15 @@ pub fn openAIToAnthropic(allocator: Allocator, body: []const u8, model: []const 
 
 // ─── Streaming: OpenAI SSE → Anthropic SSE ───────────────────────────────────
 
+/// State machine for the streaming translator. One instance is created
+/// per OpenAI→Anthropic SSE stream and threaded through `translateChunk`
+/// as chunks arrive. Tracks:
+///   - whether the message_start + ping events have been emitted yet
+///   - whether a text content block is currently open (so deltas go to
+///     the right block index)
+///   - which tool_use blocks have been opened (one bit per OpenAI tool
+///     call index, up to 16; this is enough for realistic prompts)
+///   - a running output_tokens counter, used in the final message_delta
 pub const StreamState = struct {
     sent_start: bool = false,
     sent_text_block: bool = false,
@@ -318,8 +356,21 @@ pub const StreamState = struct {
     output_tokens: u32 = 0,
 };
 
-/// Translate one "data: ..." line from OpenAI SSE to zero or more Anthropic SSE events.
-/// Caller frees result. Returns null if chunk produces no output.
+/// Translate one "data: ..." line from an OpenAI SSE stream into the
+/// equivalent zero-or-more Anthropic SSE events.
+///
+/// Returns null when the chunk is empty (e.g. a keep-alive line, a chunk
+/// that didn't advance any text or tool deltas). Caller owns the
+/// returned string and must free it; the function takes care of
+/// formatting the `event:` / `data:` lines.
+///
+/// Special cases:
+///   - `"[DONE]"` → emit the final content_block_stop / message_delta /
+///     message_stop trio (and any tool_use stops that were open).
+///   - first real chunk → prepend a `message_start` event with the
+///     configured `msg_id` / `model` and a `ping` keep-alive.
+///   - tool calls arriving while a text block is open → close the text
+///     block first so the indices line up.
 pub fn translateChunk(
     allocator: Allocator,
     data: []const u8,
@@ -478,6 +529,9 @@ pub fn translateChunk(
     };
 }
 
+/// Write a single SSE frame: `event: <name>\ndata: <json>\n\n`. `data` is
+/// expected to be valid JSON; the translator calls it with already
+/// serialized JSON objects.
 fn sseEvent(w: *Io.Writer, event: []const u8, data: []const u8) !void {
     try w.print("event: {s}\ndata: {s}\n\n", .{ event, data });
 }

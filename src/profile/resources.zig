@@ -1,18 +1,32 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-/// Resource types that can be shared or kept private per profile
+/// One row in the resources catalog: a single file or directory under
+/// CLAUDE_CONFIG_DIR and the policy for whether to share it across
+/// profiles by default.
 pub const Resource = struct {
-    /// Relative path within CLAUDE_CONFIG_DIR
+    /// Path relative to the claude config root, e.g. "settings.json" or
+    /// "sessions".
     path: []const u8,
-    /// Whether this is a directory (vs a file)
+    /// True if this entry is a directory (needs `mkdirAll`), false for a
+    /// file (we don't pre-create those — claude creates them on first use).
     is_dir: bool,
 
-    /// Default policy: shared across profiles (symlinked to ~/.claude)
+    /// Default sharing policy. When the profile is shared (the default),
+    /// entries with `default_shared = true` are symlinked to ~/.claude;
+    /// entries with `default_shared = false` get a per-profile private
+    /// dir. With `--no-share`, every entry is private regardless.
     default_shared: bool,
 };
 
-/// Catalog of all claude config resources and their default sharing policy
+/// Catalog of every file/directory under CLAUDE_CONFIG_DIR that mcc
+/// knows about, with the default sharing policy for each.
+///
+/// This is the single source of truth for "what's in a claude config dir
+/// and should it be shared with other profiles". Adding a new claude
+/// resource that's safe to share is a one-line change here; making a
+/// previously-shared resource private is a one-line change too (flip
+/// `default_shared`).
 pub const resources: []const Resource = &.{
     // Shared by default (symlinked to ~/.claude)
     Resource{ .path = "settings.json", .is_dir = false, .default_shared = true },
@@ -33,7 +47,11 @@ pub const resources: []const Resource = &.{
     Resource{ .path = ".credentials.json", .is_dir = false, .default_shared = false },
 };
 
-/// Get the sharing policy for a resource given whether the profile is shared
+/// Resolve the effective sharing policy for a resource in a profile with
+/// the given sharing mode:
+///
+///   profile_shared = false  → always false (--no-share means nothing shared)
+///   profile_shared = true   → resource's own `default_shared`
 pub fn policy(resource: Resource, profile_shared: bool) bool {
     if (!profile_shared) return false; // --no-share: nothing is shared
     return resource.default_shared;

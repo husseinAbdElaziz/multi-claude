@@ -4,17 +4,43 @@ const cfgstore = @import("../shared/cfgstore.zig");
 
 const FILE = "providers.json";
 
+/// How a provider speaks to its API. Drives both the request path
+/// (Anthropic-shape passthrough vs. full translation) and the response
+/// path (SSE re-streaming only matters for the openai_compat case).
 pub const ProviderType = enum {
-    anthropic_compat, // speaks Anthropic Messages API (e.g. OpenRouter, any Anthropic-format proxy)
-    openai_compat,    // speaks OpenAI Chat Completions API (Ollama, LM Studio, OpenAI, Groq, etc.)
+    /// Speaks the Anthropic Messages API (OpenRouter, any
+    /// Anthropic-format proxy). Body is forwarded unchanged; only the
+    /// URL and auth header differ.
+    anthropic_compat,
+    /// Speaks the OpenAI Chat Completions API (Ollama, LM Studio,
+    /// OpenAI, Groq, etc.). The proxy translates Anthropic↔OpenAI on
+    /// the wire, including streaming SSE.
+    openai_compat,
 };
 
+/// One row of the multi-provider routing table persisted in
+/// `providers.json`.
+///
+/// Multiple entries can be configured per profile — the proxy picks
+/// the right one by matching the requested model id against `models`.
+/// The special model id `"*"` is a wildcard that matches any model
+/// (used for "I just want everything to go to this one provider").
 pub const ProviderEntry = struct {
+    /// Human-friendly name (shown in the web UI / logs).
     name: []u8,
+    /// What shape the provider speaks.
     provider_type: ProviderType,
+    /// Base URL of the provider (e.g. "https://openrouter.ai/api" or
+    /// "http://localhost:1234/v1"). The proxy appends "/v1/messages"
+    /// or "/chat/completions" as appropriate.
     api_url: []u8,
+    /// API key for the provider. Null is meaningful for local servers
+    /// that don't require auth.
     api_key: ?[]u8,
-    /// Model names this provider handles. "*" matches anything.
+    /// Model ids this provider handles. `"*"` matches any model. The
+    /// `matchesModel` / `resolveModel` methods also recognize a
+    /// trailing-`*` glob and a `prefix/` boundary for stripping
+    /// routing prefixes Claude Code may prepend.
     models: [][]u8,
 
     pub fn deinit(self: *ProviderEntry, allocator: Allocator) void {
@@ -25,6 +51,17 @@ pub const ProviderEntry = struct {
         allocator.free(self.models);
     }
 
+    /// Does this provider handle `model`? Three flavors of match:
+    ///   1. exact: "qwen-72b" == configured "qwen-72b"
+    ///   2. wildcard: configured "*" matches anything
+    ///   3. glob with trailing "*": configured "llama*" matches
+    ///      "llama3.2:latest"
+    ///   4. prefix-boundary suffix: configured "qwen-72b" matches
+    ///      "anthropic/lmstudio/qwen-72b" — i.e. configured model
+    ///      appears after a "/" in the requested model. Plain
+    ///      substring matches without the "/" boundary do NOT match
+    ///      (would falsely match "foobarqux" against configured
+    ///      "bar").
     pub fn matchesModel(self: *const ProviderEntry, model: []const u8) bool {
         for (self.models) |m| {
             if (std.mem.eql(u8, m, "*")) return true;
@@ -103,6 +140,9 @@ test "resolveModel: strips prefix, preserves exact/glob/wildcard" {
     try t.expectEqualStrings("llama3.2:latest", pg.resolveModel("llama3.2:latest"));
 }
 
+/// The full multi-provider routing table for a profile, persisted as
+/// `providers.json`. Ordered list — first match wins in
+/// `findProvider`.
 pub const Config = struct {
     entries: []ProviderEntry,
 
@@ -111,6 +151,10 @@ pub const Config = struct {
         allocator.free(self.entries);
     }
 
+    /// Look up which provider should handle `model` — first entry
+    /// whose `matchesModel` returns true wins, in declared order.
+    /// Returns null when no entry matches, in which case the proxy
+    /// falls back to the Anthropic passthrough.
     pub fn findProvider(self: *const Config, model: []const u8) ?*const ProviderEntry {
         for (self.entries) |*e| {
             if (e.matchesModel(model)) return e;

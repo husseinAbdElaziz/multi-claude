@@ -1,13 +1,16 @@
+/// Build script for the `mcc` binary. Single executable, one shared
+/// root module containing every source file, plus a `build_options`
+/// module that injects the version string compiled into the binary.
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Single shared module for all source files.
-    // `link_libc` is required: config.zig uses libc `getenv` and fsx.zig uses
-    // `std.c.symlink`. macOS links libc implicitly, but Linux does not, so
-    // without this the build fails on Linux CI.
+    // Single shared module for all source files. `link_libc` is
+    // required: config.zig uses libc `getenv` and fsx.zig uses
+    // `std.c.symlink`. macOS links libc implicitly, but Linux does
+    // not, so without this the build fails on Linux CI.
     const src_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -15,8 +18,11 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
-    // Version baked into the binary. CI release builds pass `-Dversion=<tag>`
-    // so `mcc --version` matches the released tag; local builds use the default.
+    // Version baked into the binary. CI release builds pass
+    // `-Dversion=<tag>` so `mcc --version` matches the released tag.
+    // Local builds default to the latest released version so a
+    // `zig build` checkout still reports a meaningful version instead
+    // of a stale placeholder.
     const version = b.option([]const u8, "version", "Version string reported by `mcc --version`") orelse "0.1.0";
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
@@ -46,7 +52,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // Add a single 'src' import that gives tests access to the entire src/ directory
+    // Expose the entire `src/` tree to the test module as a single
+    // `src` import, so tests can `@import("src/main.zig")` to reach
+    // the production code under test.
     tests.root_module.addImport("src", src_module);
 
     const test_run = b.addRunArtifact(tests);

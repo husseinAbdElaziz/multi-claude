@@ -1,18 +1,27 @@
-/// Generic store for profile-scoped JSON config files under ~/.multi-claude.
+/// Generic on-disk store for profile-scoped JSON config files.
 ///
-/// Both `provider.json` (single provider) and `providers.json` (multi-provider
-/// routing table) share the exact same path layout and read/write lifecycle;
-/// only the filename and the serialized type differ. This module captures that
-/// shared logic, parameterized by a type `T` that exposes:
-///   - `pub fn fromJson(allocator, []const u8) !T`
-///   - `pub fn toJson(self, allocator) ![]u8`
+/// Each profile (or the global default) keeps a small set of JSON files
+/// under `~/.multi-claude/`:
+///   - `provider.json`  — single-provider override (see `provider.zig`)
+///   - `providers.json` — multi-provider routing table (see `providers.zig`)
+///
+/// Both files share the same path layout, the same read/write/delete
+/// lifecycle, and the same per-profile-vs-global lookup rules. This module
+/// factors that shared logic into one place, parameterized by a type `T`
+/// that must expose:
+///   - `pub fn fromJson(allocator, []const u8) !T`  — parse
+///   - `pub fn toJson(self, allocator) ![]u8`        — serialize
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const fsx = @import("fsx.zig");
 const config = @import("config.zig");
 
-/// Path to `filename` for a profile. null profile_name → global default
-/// (~/.multi-claude/<filename>); otherwise the per-profile copy.
+/// Build the filesystem path to `filename` for `profile_name`.
+///
+///   profile_name == null  →  ~/.multi-claude/<filename>          (global)
+///   profile_name == "foo" →  ~/.multi-claude/profiles/foo/<filename>
+///
+/// Caller owns the returned slice and must `allocator.free` it.
 pub fn profilePath(allocator: Allocator, profile_name: ?[]const u8, filename: []const u8) ![]u8 {
     const home = try config.homeDir(allocator);
     defer allocator.free(home);
@@ -22,7 +31,10 @@ pub fn profilePath(allocator: Allocator, profile_name: ?[]const u8, filename: []
     return std.fmt.allocPrint(allocator, "{s}/.multi-claude/{s}", .{ home, filename });
 }
 
-/// Load with fallback: profile-specific → global default → null.
+/// Load `filename` with fallback: first try the profile-specific file, then
+/// the global default. Returns null if neither exists. The "profile wins,
+/// global is the default" rule is how per-profile overrides interact with a
+/// shared machine-wide configuration.
 pub fn load(comptime T: type, allocator: Allocator, profile_name: ?[]const u8, filename: []const u8) !?T {
     if (profile_name) |name| {
         if (try readAt(T, allocator, name, filename)) |v| return v;
@@ -30,11 +42,16 @@ pub fn load(comptime T: type, allocator: Allocator, profile_name: ?[]const u8, f
     return readAt(T, allocator, null, filename);
 }
 
-/// Load the exact path (no fallback). Returns null if the file is absent.
+/// Load the exact path for `profile_name` (no fallback to global). Returns
+/// null if that file doesn't exist. Use this when the caller needs to know
+/// whether *this profile* has its own copy.
 pub fn loadDirect(comptime T: type, allocator: Allocator, profile_name: ?[]const u8, filename: []const u8) !?T {
     return readAt(T, allocator, profile_name, filename);
 }
 
+/// Internal: read a specific file and parse it via `T.fromJson`. Returns
+/// null on missing files; surfaces parse errors so a corrupt config crashes
+/// loud rather than silently falling back to an empty default.
 fn readAt(comptime T: type, allocator: Allocator, profile_name: ?[]const u8, filename: []const u8) !?T {
     const path = try profilePath(allocator, profile_name, filename);
     defer allocator.free(path);
@@ -44,7 +61,9 @@ fn readAt(comptime T: type, allocator: Allocator, profile_name: ?[]const u8, fil
     return try T.fromJson(allocator, data);
 }
 
-/// Serialize `value` and write it atomically, creating parent dirs as needed.
+/// Serialize `value` to JSON, create any missing parent directories, and
+/// write atomically (write-temp-then-rename) so a crash mid-write can't
+/// corrupt an existing config.
 pub fn save(comptime T: type, allocator: Allocator, profile_name: ?[]const u8, filename: []const u8, value: T) !void {
     const path = try profilePath(allocator, profile_name, filename);
     defer allocator.free(path);
@@ -55,7 +74,9 @@ pub fn save(comptime T: type, allocator: Allocator, profile_name: ?[]const u8, f
     try fsx.atomicWrite(allocator, path, json);
 }
 
-/// Remove the config file (idempotent).
+/// Delete the file for `profile_name`/`filename`. Idempotent — missing files
+/// are not an error, since the caller is just trying to ensure it doesn't
+/// exist.
 pub fn delete(allocator: Allocator, profile_name: ?[]const u8, filename: []const u8) !void {
     const path = try profilePath(allocator, profile_name, filename);
     defer allocator.free(path);

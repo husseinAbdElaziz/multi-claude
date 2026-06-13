@@ -3,15 +3,29 @@ const Allocator = std.mem.Allocator;
 const fsx = @import("../shared/fsx.zig");
 const config = @import("../shared/config.zig");
 
+/// Persistent metadata for a single profile, written to `manifest.zon`.
+///
+/// The manifest records the three things we need to know about a profile
+/// after creation: its name (so a directory listing can read it back), the
+/// sharing policy chosen at `mcc new` time, and a creation timestamp.
+///
+/// All string fields are owned slices — the caller is responsible for
+/// freeing them (use `manifest.deinit`-style cleanup or the helpers below
+/// that take ownership via the allocator).
 pub const Manifest = struct {
-    /// Profile name
+    /// Profile name (duplicated into the allocator; caller frees).
     name: []u8,
     /// Whether this profile shares resources with the default profile
+    /// (~/.claude). When false, the profile is fully isolated.
     shared: bool,
-    /// Creation timestamp (unix epoch seconds)
+    /// Creation timestamp (unix epoch seconds).
     created_at: u64,
 
-    /// Serialize to ZON format
+    /// Serialize the manifest into a ZON (zig object notation) string.
+    /// ZON is chosen over JSON here for readability — `manifest.zon` is a
+    /// file the user might open to see what a profile is, and ZON's
+    /// `.{name = "foo", shared = true, ...}` format is closer to a config
+    /// file than JSON's braces-and-quotes.
     pub fn toZon(self: Manifest, allocator: Allocator) ![]u8 {
         return std.fmt.allocPrint(allocator,
             \\{{
@@ -26,7 +40,13 @@ pub const Manifest = struct {
         });
     }
 
-    /// Parse from ZON format (simple parser)
+    /// Parse a ZON manifest back into a `Manifest`.
+    ///
+    /// This is a deliberately small, permissive parser — not a full ZON
+    /// implementation. It only knows about the three fields the manifest
+    /// uses, and treats unknown fields as ignored. Missing fields fall back
+    /// to safe defaults (empty name, shared=true, timestamp 0), so a
+    /// hand-edited or partially-corrupt manifest is still readable.
     pub fn fromZon(allocator: Allocator, data: []const u8) !Manifest {
         // `name` starts as an owned empty string so it is never `undefined`:
         // a corrupt manifest missing `.name` still yields a value that callers
@@ -94,7 +114,8 @@ pub const Manifest = struct {
         return trimmed;
     }
 
-    /// Save to disk
+    /// Write the manifest to `<profile-dir>/manifest.zon` atomically (temp
+    /// file + rename) so a crash mid-write can't corrupt an existing one.
     pub fn save(self: Manifest, allocator: Allocator) !void {
         const path = try config.profileManifestPath(allocator, self.name);
         defer allocator.free(path);
@@ -109,7 +130,9 @@ pub const Manifest = struct {
         try fsx.atomicWrite(allocator, path, content);
     }
 
-    /// Load from disk
+    /// Read and parse `<profile-dir>/manifest.zon`. Errors on a missing or
+    /// unreadable file (use `fsx.exists` first if you need to treat
+    /// "missing" as "use defaults").
     pub fn load(allocator: Allocator, profile_name: []const u8) !Manifest {
         const path = try config.profileManifestPath(allocator, profile_name);
         defer allocator.free(path);

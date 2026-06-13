@@ -8,8 +8,10 @@ const composer = @import("composer.zig");
 const Log = @import("../shared/log.zig").Log;
 
 /// Validate a profile name. Only allows characters that are safe inside a
-/// single path component, preventing path traversal (e.g. "../../etc") and
-/// hidden/relative names ("." / "..").
+/// single path component — letters, digits, '-', '_' — and caps the length
+/// at 64. This prevents path traversal (e.g. "../../etc") and rejects
+/// hidden/relative names (".", "..") as well as any name containing
+/// slashes or NULs.
 pub fn validateName(name: []const u8) bool {
     if (name.len == 0 or name.len > 64) return false;
     for (name) |ch| switch (ch) {
@@ -19,7 +21,18 @@ pub fn validateName(name: []const u8) bool {
     return true;
 }
 
-/// Create a new profile
+/// Create a new profile named `name` and compose its CLAUDE_CONFIG_DIR.
+///
+/// Steps:
+///   1. Validate the name (refuses "default" and any invalid characters).
+///   2. Make sure no profile with that name already exists.
+///   3. Write a manifest.zon (the profile's metadata: name, sharing policy,
+///      creation timestamp).
+///   4. Compose the config directory (symlinks for shared resources, empty
+///      dirs for private ones) via `composer.compose`.
+///
+/// `no_share` flips the sharing policy — `--no-share` profiles get a fully
+/// independent config dir with no symlinks to ~/.claude at all.
 pub fn create(allocator: Allocator, logger: Log, name: []const u8, no_share: bool) !void {
     if (!validateName(name)) {
         logger.err("invalid profile name '{s}': use letters, digits, '-' or '_' (max 64)", .{name});
@@ -60,7 +73,14 @@ pub fn create(allocator: Allocator, logger: Log, name: []const u8, no_share: boo
     });
 }
 
-/// Delete a profile
+/// Delete the profile directory and everything in it.
+///
+/// Hard guards: "default" can't be deleted (it IS ~/.claude — see README),
+/// the name must be valid, and the profile must actually exist. The
+/// underlying filesystem deletion is recursive (`fsx.removeAll`); shared
+/// resources in ~/.claude are NEVER touched because they're symlinks into
+/// the user's real config, and unlinking the symlink here just removes the
+/// symlink, not the file it points to.
 pub fn delete(allocator: Allocator, logger: Log, name: []const u8) !void {
     if (!validateName(name)) {
         logger.err("invalid profile name '{s}': use letters, digits, '-' or '_' (max 64)", .{name});
@@ -86,7 +106,10 @@ pub fn delete(allocator: Allocator, logger: Log, name: []const u8) !void {
     logger.info("deleted profile '{s}'", .{name});
 }
 
-/// List all profiles
+/// Print one line per profile, each showing the name and the sharing mode
+/// (shared / isolated) read from the profile's manifest. If the profiles
+/// dir doesn't exist yet (no profiles have been created), prints a single
+/// "no profiles created yet" info line.
 pub fn list(allocator: Allocator, logger: Log) !void {
     const mcc_dir = try config.mccDir(allocator);
     defer allocator.free(mcc_dir);
@@ -122,7 +145,12 @@ pub fn list(allocator: Allocator, logger: Log) !void {
     }
 }
 
-/// Print the composed CLAUDE_CONFIG_DIR for a profile
+/// Print the CLAUDE_CONFIG_DIR path mcc would set when launching `name`.
+///
+/// For "default" this is the user's real ~/.claude (or $CLAUDE_CONFIG_DIR
+/// if set). For any other profile this is the composed config dir under
+/// ~/.multi-claude/profiles/<name>/config. Useful for shells and scripts
+/// that want to run claude against a specific profile directly.
 pub fn which(allocator: Allocator, logger: Log, name: []const u8) !void {
     const io = Io.Threaded.global_single_threaded.io();
     const out = Io.File.stdout();

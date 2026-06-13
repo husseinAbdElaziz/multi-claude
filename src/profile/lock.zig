@@ -5,8 +5,13 @@ fn getIo() Io {
     return Io.Threaded.global_single_threaded.io();
 }
 
-/// Try to acquire an advisory lock on a file. Returns the file handle on success,
-/// null if the lock is already held (same profile running elsewhere).
+/// Try to acquire an exclusive, non-blocking advisory lock on `lock_path`.
+///
+/// Returns the open file handle on success (the caller is responsible for
+/// holding it for as long as the lock should stay held) or null when
+/// another process already holds the lock. The same path is what the
+/// launcher uses to prevent two `mcc <profile>` invocations from stepping
+/// on each other's session state.
 pub fn tryAcquire(lock_path: []const u8) !?Io.File {
     const io = getIo();
     const absolute = std.fs.path.isAbsolute(lock_path);
@@ -40,7 +45,9 @@ pub fn tryAcquire(lock_path: []const u8) !?Io.File {
     return file;
 }
 
-/// Release a lock
+/// Release the lock and close the file handle. The kernel also drops the
+/// flock when the fd is closed at process exit, so a crash won't leave
+/// the lock held forever.
 pub fn release(file: Io.File) void {
     const io = getIo();
     Io.File.unlock(file, io);

@@ -37,4 +37,5 @@ comptime {
     _ = @import("integration.zig");
     _ = @import("update.zig");
     _ = @import("routing.zig");
+    _ = @import("proxy_parsing.zig");
 }

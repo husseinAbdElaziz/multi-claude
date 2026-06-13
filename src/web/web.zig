@@ -11,10 +11,25 @@ const fsx = @import("../shared/fsx.zig");
 const httpx = @import("../shared/httpx.zig");
 const jsonw = @import("../shared/jsonw.zig");
 
+/// Tiny localhost-only HTTP server for the provider config web UI.
+///
+/// The HTML / JS / CSS is embedded at compile time via `@embedFile`, so
+/// the binary is self-contained — no asset files to ship. The server
+/// itself is a one-thread-per-connection loop: each connection gets
+/// parsed, dispatched, and the connection is closed (no keep-alive).
+///
+/// Security notes:
+///   - Listens on 127.0.0.1 only; never reachable from the network.
+///   - `Sec-Fetch-Site` is checked for cross-site requests on /api/*
+///     endpoints (CSRF defense — see `csrfOk`).
 const Init = std.process.Init.Minimal;
 
+/// The single-page UI HTML, embedded into the binary at build time.
 const HTML = @embedFile("resources/ui.html");
 
+/// Start the UI server on `port` (default 8989). Best-effort: opens
+/// the default browser to the local URL, then loops accepting
+/// connections until killed.
 pub fn serve(allocator: Allocator, logger: Log, init: Init, port: u16) !void {
     var threaded = Io.Threaded.init(allocator, .{ .environ = init.environ });
     defer threaded.deinit();
@@ -43,14 +58,19 @@ pub fn serve(allocator: Allocator, logger: Log, init: Init, port: u16) !void {
     }
 }
 
+/// Open the default browser pointed at the running UI server. Best
+/// effort: any error (no DISPLAY, no browser installed, WSL without
+/// xdg-open) just logs a "open it manually" message and proceeds.
 fn openBrowser(allocator: Allocator, logger: Log, io: Io, port: u16) !void {
     _ = logger;
     const url = try std.fmt.allocPrint(allocator, "http://localhost:{d}", .{port});
     defer allocator.free(url);
 
+    // Windows is unsupported per the README, so fall through to the
+    // same `xdg-open` shim we'd use on Linux/WSL. The previous `cmd`
+    // was a footgun (cmd treats its first arg as a command, not a URL).
     const open_cmd: []const u8 = switch (builtin.os.tag) {
         .macos => "open",
-        .windows => "cmd",
         else => "xdg-open",
     };
 
@@ -60,6 +80,18 @@ fn openBrowser(allocator: Allocator, logger: Log, io: Io, port: u16) !void {
     _ = child.wait(io) catch {};
 }
 
+/// Parse a single HTTP request and dispatch to the right handler. The
+/// connection is closed regardless of outcome (no keep-alive). Route
+/// table:
+///
+///   GET    /                     → embedded index.html
+///   GET    /api/profiles         → list profile names + hasProvider flag
+///   GET    /api/fetch-models?url=...&key=... → live-probe a provider
+///   GET    /api/provider?name=X  → load provider.json for profile X
+///   POST   /api/provider?name=X  → save provider.json for profile X
+///   DELETE /api/provider?name=X  → delete provider.json for profile X
+///   OPTIONS /api/provider        → CORS preflight (same-origin browser)
+///   anything else                → 404
 fn handleConnection(allocator: Allocator, io: Io, stream: *net.Stream, logger: Log) !void {
     _ = logger;
 
@@ -80,8 +112,9 @@ fn handleConnection(allocator: Allocator, io: Io, stream: *net.Stream, logger: L
     const path = target[0..path_end];
     const query = if (path_end < target.len) target[path_end + 1 ..] else "";
 
-    // CSRF: the API mutates on-disk provider configs (API keys). Reject any
-    // cross-site browser request before it can touch them.
+    // CSRF: the API mutates on-disk provider configs (API keys).
+    // Reject any cross-site browser request before it can touch them.
+    // See `csrfOk` for the header-based check.
     if (std.mem.startsWith(u8, path, "/api/") and !csrfOk(&request)) {
         try httpx.respondError(&request, .forbidden, "forbidden");
         return;
@@ -151,6 +184,8 @@ fn handleConnection(allocator: Allocator, io: Io, stream: *net.Stream, logger: L
     });
 }
 
+/// Decode a URL-encoded (percent-encoded) string. `+` is treated as a
+/// space (form-encoded style), as is conventional for query strings.
 fn percentDecode(allocator: Allocator, s: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -172,6 +207,10 @@ fn percentDecode(allocator: Allocator, s: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
+/// Look up a single key in a `&`-separated query string. Returns a
+/// slice into `query` (the value, NOT percent-decoded — call
+/// `percentDecode` on the result if needed). Returns null when the
+/// key is absent.
 fn getQueryParam(query: []const u8, key: []const u8) ?[]const u8 {
     var it = std.mem.tokenizeScalar(u8, query, '&');
     while (it.next()) |param| {
@@ -181,6 +220,11 @@ fn getQueryParam(query: []const u8, key: []const u8) ?[]const u8 {
     return null;
 }
 
+/// Convenience endpoint used by the UI's "Fetch models" button: hit
+/// `GET {url}/models` with optional `Authorization: Bearer <key>` and
+/// return the id list as JSON. Any failure (bad URL, connect error,
+/// non-200, malformed body) collapses to a single error JSON — this is
+/// a probe, not a diagnostic tool.
 fn handleFetchModels(allocator: Allocator, io: Io, request: *std.http.Server.Request, query: []const u8) !void {
     const raw_url = getQueryParam(query, "url") orelse {
         return httpx.respondJson(request, "{\"error\":\"missing url\"}");
@@ -215,6 +259,9 @@ fn handleFetchModels(allocator: Allocator, io: Io, request: *std.http.Server.Req
     return httpx.respondJson(request, json);
 }
 
+/// Return the list of profile names along with whether each has a
+/// provider.json of its own (vs. falling back to the global default).
+/// Used by the UI to render the profile selector.
 fn handleGetProfiles(allocator: Allocator, request: *std.http.Server.Request) !void {
     const mcc_dir = try config.mccDir(allocator);
     defer allocator.free(mcc_dir);
@@ -250,6 +297,10 @@ fn handleGetProfiles(allocator: Allocator, request: *std.http.Server.Request) !v
     try httpx.respondJson(request, body);
 }
 
+/// Return the provider.json for the named profile (or the global
+/// default when `name` is null). When no file exists, returns a
+/// sentinel "all null" JSON object so the UI can populate an empty
+/// form rather than treating the absence as an error.
 fn handleGetProvider(allocator: Allocator, request: *std.http.Server.Request, name: ?[]const u8) !void {
     const profile_name: ?[]const u8 = resolveProfileName(name);
 
@@ -265,6 +316,9 @@ fn handleGetProvider(allocator: Allocator, request: *std.http.Server.Request, na
     try httpx.respondJson(request, "{\"api_url\":null,\"api_key\":null,\"model\":null}");
 }
 
+/// Save a new provider.json for the named profile. Reads the JSON
+/// body (capped at 4 KiB), parses it via `Provider.fromJson`, and
+/// writes it atomically via `cfgstore.save`.
 fn handlePostProvider(allocator: Allocator, request: *std.http.Server.Request, name: ?[]const u8) !void {
     const body_len: usize = @intCast(request.head.content_length orelse 0);
     if (body_len == 0 or body_len > 4096) {
@@ -293,16 +347,25 @@ fn handlePostProvider(allocator: Allocator, request: *std.http.Server.Request, n
     try httpx.respondJson(request, "{\"ok\":true}");
 }
 
+/// Remove the provider.json for the named profile. Idempotent — a
+/// missing file isn't an error.
 fn handleDeleteProvider(allocator: Allocator, request: *std.http.Server.Request, name: ?[]const u8) !void {
     const profile_name: ?[]const u8 = resolveProfileName(name);
     provider_mod.deleteConfig(allocator, profile_name) catch {};
     try httpx.respondJson(request, "{\"ok\":true}");
 }
 
-/// Cross-site request protection. Modern browsers send Sec-Fetch-Site on every
-/// request and JS cannot forge it; we allow only same-origin/none. If that
-/// header is absent we fall back to an Origin host check; if neither is present
-/// (curl, old clients) we allow — the threat is the browser, not the CLI.
+/// Cross-site request protection. The browser-attack model is what
+/// matters here: if an evil page on a different origin can convince a
+/// user's browser to call our `/api/provider` endpoints, it can
+/// overwrite provider.json with its own api_url + api_key.
+///
+/// Modern browsers send `Sec-Fetch-Site` on every request and JS
+/// cannot forge it; we allow only `same-origin` and `none` (the latter
+/// for direct navigations). For older browsers we fall back to an
+/// `Origin` host check (must be localhost / 127.0.0.1 / ::1). When
+/// neither header is present (curl, old clients) we allow — the threat
+/// is the browser, not the CLI.
 fn csrfOk(request: *std.http.Server.Request) bool {
     var sec_fetch_site: ?[]const u8 = null;
     var origin: ?[]const u8 = null;
@@ -322,6 +385,9 @@ fn csrfOk(request: *std.http.Server.Request) bool {
     return true;
 }
 
+/// Map a profile name from the API to a `cfgstore`-style key. The
+/// special name "default" maps to the global default (`null`), and any
+/// other name passes through unchanged.
 fn resolveProfileName(name: ?[]const u8) ?[]const u8 {
     const n = name orelse return null;
     if (std.mem.eql(u8, n, "default")) return null;
