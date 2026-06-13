@@ -215,6 +215,15 @@ fn handleFetchModels(allocator: Allocator, io: Io, request: *std.http.Server.Req
     var client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer client.deinit();
 
+    // std.http.Client only loads the system CA bundle the first time it makes
+    // an HTTPS request. If the first request is plain HTTP and the server
+    // redirects to HTTPS, the redirect's TLS handshake reads client.now (set
+    // alongside the bundle) while it's still null and panics. Pre-load it so
+    // http -> https redirects work.
+    const now = Io.Clock.real.now(io);
+    client.ca_bundle.rescan(allocator, io, now) catch {};
+    client.now = now;
+
     const auth: ?[]u8 = if (key) |k| (if (k.len > 0) try std.fmt.allocPrint(allocator, "Bearer {s}", .{k}) else null) else null;
     defer if (auth) |a| allocator.free(a);
 
