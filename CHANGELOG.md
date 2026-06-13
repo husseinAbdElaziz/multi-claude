@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-06-13
+
+### Fixed
+
+- Custom models behind a redirecting `http://` provider URL now work again (regression in 0.6.0). Two problems stacked on the proxy's request-forwarding path: the outbound client was rebuilt without the CA-bundle/clock pre-load (the 0.6.0 fix only covered model discovery), and — more importantly — the proxy never followed the redirect. ngrok and similar gateways answer a plain-HTTP `api_url` with a `307` to HTTPS, and `std.http.Client` can't follow that once the POST body has been streamed (it returns `error.RedirectRequiresResend`). The result was an endless retry loop with no request ever reaching the model. The forwarder now uses the shared CA-preloaded client and follows up to 3 redirects itself, replaying the in-memory body to the new URL. (Setting the provider URL to `https://` directly still avoids the extra round-trip.)
+
 ## [0.6.0] - 2026-06-13
 
 ### Fixed
