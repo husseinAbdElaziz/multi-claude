@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-06-13
+
+### Fixed
+
+- UI and proxy servers now rebind their port immediately on restart. After Ctrl+C the listening socket lingers in `TIME_WAIT`, and without `SO_REUSEADDR` the next `mcc ui`/proxy launch failed with `error: AddressInUse` for a minute or two. Both long-running listeners now set `reuse_address`, so a restart binds right away. (`findFreePort` keeps the default so it still detects genuinely free ports.)
+- `http` → `https` redirects no longer panic in the proxy and web HTTP clients. `std.http.Client` only loads the system CA bundle on its first HTTPS request; when the first request was plain HTTP and the server redirected to HTTPS, the handshake read an unset `client.now` and crashed. The CA bundle and clock are now pre-loaded, so redirects (e.g. provider model fetching) work.
+
 ## [0.5.2] - 2026-06-07
 
 ### Fixed
