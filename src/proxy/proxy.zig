@@ -347,41 +347,71 @@ fn forwardPassthrough(
     is_streaming: bool,
     do_translate: bool,
 ) !void {
-    const uri = std.Uri.parse(url) catch {
-        try httpx.respondError(req, .bad_request, "bad url");
-        return;
-    };
-
-    var client: std.http.Client = .{ .allocator = allocator, .io = io };
+    var client = httpx.newClient(allocator, io);
     defer client.deinit();
 
-    var upstream = client.request(.POST, uri, .{
-        .extra_headers = headers,
-        .keep_alive = false,
-        .headers = .{ .accept_encoding = .{ .override = "identity" } },
-    }) catch {
-        try httpx.respondError(req, .bad_gateway, "upstream connect failed");
-        return;
-    };
+    // Forward the POST, following up to 3 redirects ourselves. ngrok and many
+    // gateways answer a plain-HTTP api_url with a 307 to HTTPS. std.http.Client
+    // can't follow that once the body has been streamed — it returns
+    // error.RedirectRequiresResend — so we replay the in-memory body to the new
+    // URL each hop.
+    var current_url: []const u8 = url;
+    var url_buf: ?[]u8 = null;
+    defer if (url_buf) |b| allocator.free(b);
+
+    var upstream: std.http.Client.Request = undefined;
+    var response: std.http.Client.Response = undefined;
+    var hops: u8 = 0;
+    while (true) {
+        const uri = std.Uri.parse(current_url) catch {
+            try httpx.respondError(req, .bad_request, "bad url");
+            return;
+        };
+        upstream = client.request(.POST, uri, .{
+            .extra_headers = headers,
+            .keep_alive = false,
+            .redirect_behavior = .unhandled,
+            .headers = .{ .accept_encoding = .{ .override = "identity" } },
+        }) catch {
+            try httpx.respondError(req, .bad_gateway, "upstream connect failed");
+            return;
+        };
+
+        upstream.transfer_encoding = .{ .content_length = body.len };
+        var bw = upstream.sendBodyUnflushed(&.{}) catch {
+            upstream.deinit();
+            try httpx.respondError(req, .bad_gateway, "upstream send failed");
+            return;
+        };
+        bw.writer.writeAll(body) catch {
+            upstream.deinit();
+            try httpx.respondError(req, .bad_gateway, "upstream write failed");
+            return;
+        };
+        bw.end() catch {};
+        if (upstream.connection) |conn| conn.flush() catch {};
+
+        var redir_buf: [8192]u8 = undefined;
+        response = upstream.receiveHead(&redir_buf) catch {
+            upstream.deinit();
+            try httpx.respondError(req, .bad_gateway, "upstream response failed");
+            return;
+        };
+
+        if (response.head.status.class() == .redirect and hops < 3) {
+            if (response.head.location) |loc| {
+                const next = resolveLocation(allocator, current_url, loc) catch break;
+                if (url_buf) |b| allocator.free(b);
+                url_buf = next;
+                current_url = next;
+                hops += 1;
+                upstream.deinit();
+                continue;
+            }
+        }
+        break;
+    }
     defer upstream.deinit();
-
-    upstream.transfer_encoding = .{ .content_length = body.len };
-    var bw = upstream.sendBodyUnflushed(&.{}) catch {
-        try httpx.respondError(req, .bad_gateway, "upstream send failed");
-        return;
-    };
-    bw.writer.writeAll(body) catch {
-        try httpx.respondError(req, .bad_gateway, "upstream write failed");
-        return;
-    };
-    bw.end() catch {};
-    if (upstream.connection) |conn| conn.flush() catch {};
-
-    var redir_buf: [8192]u8 = undefined;
-    var response = upstream.receiveHead(&redir_buf) catch {
-        try httpx.respondError(req, .bad_gateway, "upstream response failed");
-        return;
-    };
 
     const status: std.http.Status = @enumFromInt(@intFromEnum(response.head.status));
 
@@ -491,6 +521,21 @@ fn forwardPassthrough(
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Resolve a redirect Location against the request URL. Absolute URLs are used
+/// as-is; relative ones are joined to the original scheme+authority. Caller frees.
+fn resolveLocation(allocator: Allocator, base: []const u8, loc: []const u8) ![]u8 {
+    if (std.mem.startsWith(u8, loc, "http://") or std.mem.startsWith(u8, loc, "https://"))
+        return allocator.dupe(u8, loc);
+    const scheme_end = std.mem.indexOf(u8, base, "://") orelse return error.BadRedirect;
+    const auth_start = scheme_end + 3;
+    const path_start = std.mem.indexOfScalarPos(u8, base, auth_start, '/') orelse base.len;
+    const origin = base[0..path_start];
+    return if (loc.len > 0 and loc[0] == '/')
+        std.fmt.allocPrint(allocator, "{s}{s}", .{ origin, loc })
+    else
+        std.fmt.allocPrint(allocator, "{s}/{s}", .{ origin, loc });
+}
 
 /// Re-emit an Anthropic request body with the `model` field replaced.
 pub fn bodyWithModel(allocator: Allocator, body: []const u8, new_model: []const u8) ![]u8 {
